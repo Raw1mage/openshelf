@@ -567,6 +567,121 @@ main {
 .queue-status-failed { color: #f87171; }
 .queue-status-queued { color: #fbbf24; }
 
+/* === 個人書單 (Collections) 樣式 === */
+.collection-sidebar-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-bottom: 0.35rem;
+  color: var(--text-secondary);
+}
+.collection-sidebar-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.collection-sidebar-item.active {
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+.collection-count-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  padding: 0.15rem 0.45rem;
+  border-radius: 10px;
+  color: var(--text-muted);
+}
+.collection-sidebar-item.active .collection-count-badge {
+  background: var(--accent);
+  color: #0f172a;
+  border-color: var(--accent);
+}
+
+.quick-col-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.quick-col-row:hover {
+  background: var(--bg-hover);
+}
+
+/* === 多階層樹狀分類與線上書攤樣式 === */
+.tree-node {
+  margin-bottom: 0.25rem;
+}
+.tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.tree-header:hover {
+  background: var(--bg-hover);
+}
+.tree-header.active {
+  background: rgba(56, 189, 248, 0.18);
+  color: var(--accent);
+  font-weight: 700;
+  border-left: 3px solid var(--accent);
+}
+.tree-expander {
+  display: inline-block;
+  width: 1.2rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  text-align: center;
+}
+.tree-expander.expanded {
+  transform: rotate(90deg);
+}
+.tree-badge {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  padding: 0.1rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.tree-children {
+  padding-left: 1.1rem;
+  margin-top: 0.2rem;
+  border-left: 1px dashed rgba(255, 255, 255, 0.1);
+  margin-left: 0.6rem;
+}
+
+.shelf-book-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: all 0.2s ease;
+}
+.shelf-book-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
 footer {
   border-top: 1px solid var(--border);
   padding: 1.5rem;

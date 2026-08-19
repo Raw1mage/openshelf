@@ -102,6 +102,13 @@ class CatalogDAO:
                 """,
                 (wid, now)
             )
+            # 自動推導並寫入所屬分類
+            cat_ids = infer_categories_for_work(work_data.title, work_data.authors_display)
+            for cid in cat_ids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO work_category (work_id, category_id) VALUES (?, ?)",
+                    (wid, cid)
+                )
         return wid
 
     def find_work_by_hash(self, hash_val: str) -> Optional[str]:

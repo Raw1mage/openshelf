@@ -136,6 +136,26 @@ function initEventListeners() {
   openUploadBtn.addEventListener("click", () => uploadModal.classList.add("active"));
   closeUploadBtn.addEventListener("click", () => uploadModal.classList.remove("active"));
 
+  // 個人書單 Modal 事件
+  const openCollectionsBtn = document.getElementById("openCollectionsBtn");
+  const closeCollectionsBtn = document.getElementById("closeCollectionsBtn");
+  const newCollectionBtn = document.getElementById("newCollectionBtn");
+  if (openCollectionsBtn) openCollectionsBtn.addEventListener("click", () => openCollectionsModal());
+  if (closeCollectionsBtn) closeCollectionsBtn.addEventListener("click", closeCollectionsModal);
+  if (newCollectionBtn) newCollectionBtn.addEventListener("click", createNewCollectionPrompt);
+
+  // 快速收藏 Modal 事件
+  const closeQuickCollectionBtn = document.getElementById("closeQuickCollectionBtn");
+  const saveQuickCollectionBtn = document.getElementById("saveQuickCollectionBtn");
+  if (closeQuickCollectionBtn) closeQuickCollectionBtn.addEventListener("click", () => document.getElementById("quickCollectionModal").classList.remove("active"));
+  if (saveQuickCollectionBtn) saveQuickCollectionBtn.addEventListener("click", saveQuickCollections);
+
+  // 逛線上書攤 Modal 事件
+  const openBookstallBtn = document.getElementById("openBookstallBtn");
+  const closeBookstallBtn = document.getElementById("closeBookstallBtn");
+  if (openBookstallBtn) openBookstallBtn.addEventListener("click", openBookstallModal);
+  if (closeBookstallBtn) closeBookstallBtn.addEventListener("click", closeBookstallModal);
+
   dropZone.addEventListener("click", () => fileInput.click());
   dropZone.addEventListener("dragover", (e) => {
     e.preventDefault();
@@ -384,9 +404,10 @@ function renderLocalBookCard(item) {
         ` : ""}
       </div>
       <div class="book-actions">
-        <button class="btn btn-primary" onclick="openReader('${item.work_id}')">📖 線上閱讀</button>
-        <a class="btn btn-secondary" href="${BASE_PATH}/api/files/${item.work_id}/raw" download>📥 下載原檔</a>
-        <button class="btn btn-outline" onclick="openDetail('${item.work_id}')">ℹ️ 書目詳情</button>
+        <button class="btn btn-primary" onclick="openReader('${item.work_id}')" title="線上閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
+        <button class="btn btn-secondary" onclick="openQuickCollection('${item.work_id}', '${escapeHtml(item.title)}')" title="加入個人書單" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⭐</button>
+        <a class="btn btn-secondary" href="${BASE_PATH}/api/files/${item.work_id}/raw" download title="下載原檔" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; text-decoration: none; display: inline-flex; align-items: center;">📥</a>
+        <button class="btn btn-outline" onclick="openDetail('${item.work_id}')" title="書目詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
       </div>
     </div>
   `;
@@ -421,8 +442,9 @@ function renderLiveBookCard(item) {
     leftIndicatorHtml = `<span style="font-size: 1.25rem;" title="本地已收錄">💾</span>`;
     statusBadgeHtml = `<span class="tag tag-local">💾 本地已收錄</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-primary" onclick="openReader('${targetWorkId}')">📖 立即閱讀</button>
-      <button class="btn btn-outline" onclick="openDetail('${targetWorkId}')">ℹ️ 詳情</button>
+      <button class="btn btn-primary" onclick="openReader('${targetWorkId}')" title="立即閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
+      <button class="btn btn-secondary" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(item.title)}')" title="加入個人書單" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⭐</button>
+      <button class="btn btn-outline" onclick="openDetail('${targetWorkId}')" title="詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   } else if (isDownloading) {
     leftIndicatorHtml = `<span class="pulse-anim" style="font-size: 1.15rem;" title="下載中">⏳</span>`;
@@ -978,3 +1000,360 @@ function initQueueModalDragAndResize() {
     ro.observe(card);
   }
 }
+
+// === 個人書單 (Personal Collections) ===
+let currentActiveCollectionId = null;
+let quickTargetWorkId = null;
+
+async function openCollectionsModal(targetColId = null) {
+  const modal = document.getElementById("collectionsModal");
+  modal.classList.add("active");
+  await loadCollectionsList(targetColId);
+}
+
+function closeCollectionsModal() {
+  document.getElementById("collectionsModal").classList.remove("active");
+}
+
+async function loadCollectionsList(selectColId = null) {
+  try {
+    const res = await fetch(`${BASE_PATH}/api/collections`);
+    if (!res.ok) return;
+    const collections = await res.json();
+    const sidebar = document.getElementById("collectionsSidebar");
+    
+    if (collections.length === 0) {
+      sidebar.innerHTML = `<p style="color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem;">尚未建立自訂書單</p>`;
+      document.getElementById("collectionMainView").innerHTML = `
+        <div style="text-align: center; color: var(--text-muted); padding: 3rem;">
+          <p style="font-size: 1.2rem;">點擊右上角 ➕ 建立您的第一個書單</p>
+        </div>
+      `;
+      return;
+    }
+
+    const activeId = selectColId || currentActiveCollectionId || collections[0].collection_id;
+    currentActiveCollectionId = activeId;
+
+    sidebar.innerHTML = collections.map(c => `
+      <div class="collection-sidebar-item ${c.collection_id === activeId ? 'active' : ''}" onclick="selectCollection('${c.collection_id}')">
+        <span style="display: flex; align-items: center; gap: 0.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          <span>${c.icon || '📚'}</span>
+          <span>${escapeHtml(c.name)}</span>
+        </span>
+        <span class="collection-count-badge">${c.items_count}</span>
+      </div>
+    `).join("");
+
+    await loadCollectionDetail(activeId);
+  } catch (err) {
+    console.error("載入書單失敗:", err);
+  }
+}
+
+async function selectCollection(collectionId) {
+  currentActiveCollectionId = collectionId;
+  const items = document.querySelectorAll(".collection-sidebar-item");
+  items.forEach(el => el.classList.remove("active"));
+  await loadCollectionsList(collectionId);
+}
+
+async function loadCollectionDetail(collectionId) {
+  const mainView = document.getElementById("collectionMainView");
+  try {
+    const res = await fetch(`${BASE_PATH}/api/collections/${collectionId}`);
+    if (!res.ok) return;
+    const col = await res.json();
+
+    const isSystem = col.is_system === 1;
+    mainView.innerHTML = `
+      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 1rem;">
+        <div>
+          <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem;">
+            <span>${col.icon || '📚'}</span>
+            <span>${escapeHtml(col.name)}</span>
+          </h3>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(col.description || '自訂書單')} • 共 ${col.items.length} 本書籍</p>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-outline" onclick="renameCollectionPrompt('${col.collection_id}', '${escapeHtml(col.name)}')" title="重命名書單" style="padding: 0.35rem 0.65rem;">✏️</button>
+          ${!isSystem ? `<button class="btn btn-outline" onclick="deleteCollectionPrompt('${col.collection_id}')" title="刪除此書單" style="padding: 0.35rem 0.65rem; color: #ef4444;">🗑️</button>` : ''}
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+        ${col.items.length === 0 ? `
+          <div style="text-align: center; color: var(--text-muted); padding: 3rem;">
+            <p>書單目前為空</p>
+            <p style="font-size: 0.85rem; margin-top: 0.5rem;">在搜尋或逛書架時，點擊書籍卡片上的 ⭐ 即可加入</p>
+          </div>
+        ` : col.items.map(it => `
+          <div class="book-card" style="margin-bottom: 0;">
+            <div class="book-main">
+              <div class="book-title">${escapeHtml(it.work.title)}</div>
+              <div class="book-meta">
+                <span class="tag tag-local">💾 本地</span>
+                ${getFormatTag(it.work.format)}
+                <span>✍️ ${escapeHtml(it.work.authors_display || "未知作者")}</span>
+                ${it.work.publication_year ? `<span>• ${it.work.publication_year}年</span>` : ''}
+              </div>
+            </div>
+            <div class="book-actions">
+              <button class="btn btn-primary" onclick="openReader('${it.work_id}')" title="立即閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
+              <button class="btn btn-outline" onclick="removeBookFromCollection('${col.collection_id}', '${it.work_id}')" title="從書單移除" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; color: #ef4444;">❌</button>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  } catch (err) {
+    console.error("載入書單詳情失敗:", err);
+  }
+}
+
+async function createNewCollectionPrompt() {
+  const name = prompt("請輸入新書單名稱（例如：科幻經典、待讀清單）：");
+  if (!name || !name.trim()) return;
+  try {
+    const res = await fetch(`${BASE_PATH}/api/collections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), icon: "📚" })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      await loadCollectionsList(data.collection_id);
+    }
+  } catch (err) {
+    console.error("建立書單失敗:", err);
+  }
+}
+
+async function renameCollectionPrompt(colId, currentName) {
+  const newName = prompt("請輸入書單新名稱：", currentName);
+  if (!newName || !newName.trim() || newName.trim() === currentName) return;
+  try {
+    const res = await fetch(`${BASE_PATH}/api/collections/${colId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName.trim() })
+    });
+    if (res.ok) {
+      await loadCollectionsList(colId);
+    }
+  } catch (err) {
+    console.error("重命名失敗:", err);
+  }
+}
+
+async function deleteCollectionPrompt(colId) {
+  if (!confirm("確定要刪除此書單嗎？（不會刪除書籍本體）")) return;
+  try {
+    const res = await fetch(`${BASE_PATH}/api/collections/${colId}`, {
+      method: "DELETE"
+    });
+    if (res.ok) {
+      currentActiveCollectionId = null;
+      await loadCollectionsList();
+    }
+  } catch (err) {
+    console.error("刪除失敗:", err);
+  }
+}
+
+async function removeBookFromCollection(colId, workId) {
+  try {
+    const res = await fetch(`${BASE_PATH}/api/collections/${colId}/items/${workId}`, {
+      method: "DELETE"
+    });
+    if (res.ok) {
+      await loadCollectionsList(colId);
+    }
+  } catch (err) {
+    console.error("移除書籍失敗:", err);
+  }
+}
+
+// === 快速加入書單 Popover ===
+async function openQuickCollection(workId, title) {
+  quickTargetWorkId = workId;
+  const modal = document.getElementById("quickCollectionModal");
+  modal.classList.add("active");
+  const listEl = document.getElementById("quickCollectionList");
+  listEl.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 1rem;">載入書單中...</p>`;
+
+  try {
+    const [colsRes, statusRes] = await Promise.all([
+      fetch(`${BASE_PATH}/api/collections`),
+      fetch(`${BASE_PATH}/api/collections/work/${workId}/status`)
+    ]);
+
+    const collections = await colsRes.json();
+    const joinedIds = new Set(await statusRes.json());
+
+    listEl.innerHTML = collections.map(c => {
+      const isChecked = joinedIds.has(c.collection_id);
+      return `
+        <label class="quick-col-row">
+          <span style="display: flex; align-items: center; gap: 0.5rem;">
+            <span>${c.icon || '📚'}</span>
+            <span style="font-weight: 600;">${escapeHtml(c.name)}</span>
+          </span>
+          <input type="checkbox" class="quick-col-checkbox" data-col-id="${c.collection_id}" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+        </label>
+      `;
+    }).join("");
+  } catch (err) {
+    console.error("載入快速收藏失敗:", err);
+    listEl.innerHTML = `<p style="color: #ef4444;">載入失敗</p>`;
+  }
+}
+
+async function saveQuickCollections() {
+  if (!quickTargetWorkId) return;
+  const checkboxes = document.querySelectorAll(".quick-col-checkbox");
+  const promises = [];
+
+  for (const cb of checkboxes) {
+    const colId = cb.dataset.colId;
+    if (cb.checked) {
+      promises.push(fetch(`${BASE_PATH}/api/collections/${colId}/items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work_id: quickTargetWorkId })
+      }));
+    } else {
+      promises.push(fetch(`${BASE_PATH}/api/collections/${colId}/items/${quickTargetWorkId}`, {
+        method: "DELETE"
+      }));
+    }
+  }
+
+  await Promise.all(promises);
+  document.getElementById("quickCollectionModal").classList.remove("active");
+  quickTargetWorkId = null;
+}
+
+// === 逛線上書攤 (Online Bookstalls & Tree Browsing) ===
+let currentActiveCategoryId = "cat_800";
+
+async function openBookstallModal() {
+  const modal = document.getElementById("bookstallModal");
+  modal.classList.add("active");
+  await loadCategoryTree();
+  await loadShelfWorks(currentActiveCategoryId, "文學與小說", "📚", "文學與小說");
+}
+
+function closeBookstallModal() {
+  document.getElementById("bookstallModal").classList.remove("active");
+}
+
+async function loadCategoryTree() {
+  const rootEl = document.getElementById("categoryTreeRoot");
+  try {
+    const res = await fetch(`${BASE_PATH}/api/categories/tree`);
+    if (!res.ok) return;
+    const tree = await res.json();
+
+    rootEl.innerHTML = tree.map(node => renderTreeNode(node)).join("");
+  } catch (err) {
+    console.error("載入分類樹失敗:", err);
+  }
+}
+
+function renderTreeNode(node, parentPath = "") {
+  const hasChildren = node.children && node.children.length > 0;
+  const currentPath = parentPath ? `${parentPath} > ${node.name}` : node.name;
+
+  return `
+    <div class="tree-node" id="node_${node.category_id}">
+      <div class="tree-header ${node.category_id === currentActiveCategoryId ? 'active' : ''}" 
+           onclick="handleCategoryClick('${node.category_id}', '${escapeHtml(node.name)}', '${node.icon}', '${escapeHtml(currentPath)}')">
+        <div style="display: flex; align-items: center; gap: 0.35rem; overflow: hidden;">
+          ${hasChildren ? `<span class="tree-expander expanded" onclick="event.stopPropagation(); toggleTreeNode('${node.category_id}')">▶</span>` : `<span style="width: 1.2rem;"></span>`}
+          <span>${node.icon || '📖'}</span>
+          <span style="font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(node.name)}</span>
+        </div>
+        <span class="tree-badge">${node.works_count}</span>
+      </div>
+      ${hasChildren ? `
+        <div class="tree-children" id="children_${node.category_id}">
+          ${node.children.map(child => renderTreeNode(child, currentPath)).join("")}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function toggleTreeNode(catId) {
+  const childrenEl = document.getElementById(`children_${catId}`);
+  const nodeEl = document.getElementById(`node_${catId}`);
+  const expander = nodeEl.querySelector(".tree-expander");
+  if (!childrenEl || !expander) return;
+
+  if (childrenEl.style.display === "none") {
+    childrenEl.style.display = "block";
+    expander.classList.add("expanded");
+  } else {
+    childrenEl.style.display = "none";
+    expander.classList.remove("expanded");
+  }
+}
+
+async function handleCategoryClick(catId, name, icon, breadcrumbs) {
+  currentActiveCategoryId = catId;
+  document.querySelectorAll(".tree-header").forEach(el => el.classList.remove("active"));
+  const activeHeader = document.querySelector(`#node_${catId} > .tree-header`);
+  if (activeHeader) activeHeader.classList.add("active");
+
+  await loadShelfWorks(catId, name, icon, breadcrumbs);
+}
+
+async function loadShelfWorks(catId, name, icon, breadcrumbs) {
+  document.getElementById("shelfBreadcrumbs").innerText = breadcrumbs;
+  document.getElementById("shelfTitle").innerHTML = `${icon || '📖'} ${escapeHtml(name)}`;
+  const shelfGrid = document.getElementById("shelfGrid");
+  shelfGrid.innerHTML = `<p style="color: var(--text-muted); padding: 2rem; grid-column: 1 / -1; text-align: center;">載入書架藏書中...</p>`;
+
+  try {
+    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=1&page_size=50`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (data.items.length === 0) {
+      shelfGrid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 3rem;">
+          <p style="font-size: 1.1rem;">此書架目前尚無藏書</p>
+          <p style="font-size: 0.85rem; margin-top: 0.5rem;">您可以透過手動上傳或鏡像收書充實此架位典藏</p>
+        </div>
+      `;
+      return;
+    }
+
+    shelfGrid.innerHTML = data.items.map(w => `
+      <div class="shelf-book-card">
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+            ${getFormatTag(w.format)}
+            <span style="font-size: 0.8rem; color: var(--text-muted);">${w.publication_year ? `${w.publication_year}年` : ''}</span>
+          </div>
+          <div style="font-weight: 700; font-size: 1rem; line-height: 1.4; color: var(--text-primary); margin-bottom: 0.35rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+            ${escapeHtml(w.title)}
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            ✍️ ${escapeHtml(w.authors_display || "未知作者")}
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.4rem; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 0.5rem;">
+          <button class="btn btn-primary" onclick="openReader('${w.work_id}')" title="線上閱讀" style="padding: 0.35rem 0.65rem; font-size: 1rem;">📖</button>
+          <button class="btn btn-secondary" onclick="openQuickCollection('${w.work_id}', '${escapeHtml(w.title)}')" title="加入書單" style="padding: 0.35rem 0.65rem; font-size: 1rem;">⭐</button>
+          <button class="btn btn-outline" onclick="openDetail('${w.work_id}')" title="書目詳情" style="padding: 0.35rem 0.65rem; font-size: 1rem;">ℹ️</button>
+        </div>
+      </div>
+    `).join("");
+  } catch (err) {
+    console.error("載入架位書籍失敗:", err);
+    shelfGrid.innerHTML = `<p style="color: #ef4444; padding: 2rem; grid-column: 1 / -1;">載入失敗</p>`;
+  }
+}
+

@@ -46,15 +46,15 @@
 
 ## 9. 個人化書單 (Personal Booklists & Collections)
 
-- [ ] 9.1 資料庫層：在 `schema.sql` 與 `dao.py` 新增 `collection`、`collection_item` 資料表與 CRUD 操作方法 — artifact: app/db/schema.sql, app/db/dao.py, app/models/catalog.py
-- [ ] 9.2 API 路由層：實作 `/api/collections` 系列 REST 端點（建立/清單/詳情/更新/刪除/加退書籍） — artifact: app/api/collection_routes.py, app/main.py
-- [ ] 9.3 前端 UI 層：書籍卡片新增純圖示收藏按鈕（`⭐`），頁首新增「我的書單」純圖示按鈕（`📚`）與書單管理彈窗/檢視介面 — artifact: app/static/index.html, app/static/js/app.js, app/static/css/style.css
+- [x] 9.1 資料庫層：在 `schema.sql` 與 `dao.py` 新增 `collection`、`collection_item` 資料表與 CRUD 操作方法 — artifact: app/db/schema.sql, app/db/dao.py, app/models/catalog.py
+- [x] 9.2 API 路由層：實作 `/api/collections` 系列 REST 端點（建立/清單/詳情/更新/刪除/加退書籍） — artifact: app/api/collection_routes.py, app/main.py
+- [x] 9.3 前端 UI 層：書籍卡片新增純圖示收藏按鈕（`⭐`），頁首新增「我的書單」純圖示按鈕（`📚`）與書單管理彈窗/檢視介面 — artifact: app/static/index.html, app/static/js/app.js, app/static/css/style.css
 
 ## 10. 多階層樹狀分類與線上書攤 (Multi-Level Tree Categories & Bookstall Shelf Browsing)
 
-- [ ] 10.1 資料庫與預設分類體系：在 `schema.sql` 與 `dao.py` 建立 `category`、`work_category` 結構，預先注入標準中文圖書多階層樹狀分類（總類、哲學、宗教、自然科學、應用科學、社會科學、歷史地理、語言文學、藝術生活等）與自動分類推導 — artifact: app/db/schema.sql, app/db/dao.py, app/db/categories.py
-- [ ] 10.2 API 路由層：實作 `/api/categories/tree` 與 `/api/categories/{id}/works` 分類導航與架位書籍檢索端點 — artifact: app/api/category_routes.py, app/main.py
-- [ ] 10.3 前端 UI 層：頁首新增「逛書攤」純圖示按鈕（`🏪`），實作左側多階層可折疊樹狀書目導航面板與右側沉浸式書架展示區 — artifact: app/static/index.html, app/static/js/app.js, app/static/css/style.css
+- [x] 10.1 資料庫與預設分類體系：在 `schema.sql` 與 `dao.py` 建立 `category`、`work_category` 結構，預先注入標準中文圖書多階層樹狀分類（總類、哲學、宗教、自然科學、應用科學、社會科學、歷史地理、語言文學、藝術生活等）與自動分類推導 — artifact: app/db/schema.sql, app/db/dao.py, app/db/categories.py
+- [x] 10.2 API 路由層：實作 `/api/categories/tree` 與 `/api/categories/{id}/works` 分類導航與架位書籍檢索端點 — artifact: app/api/category_routes.py, app/main.py
+- [x] 10.3 前端 UI 層：頁首新增「逛書攤」純圖示按鈕（`🏪`），實作左側多階層可折疊樹狀書目導航面板與右側沉浸式書架展示區 — artifact: app/static/index.html, app/static/js/app.js, app/static/css/style.css
 
 
 

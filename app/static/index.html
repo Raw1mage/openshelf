@@ -20,6 +20,8 @@
       <span class="logo-text">CMS圖書館</span>
     </a>
     <div class="header-actions">
+      <button class="btn btn-secondary" id="openBookstallBtn" title="逛線上書攤 / 分類導航" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">🏪</button>
+      <button class="btn btn-secondary" id="openCollectionsBtn" title="我的個人書單" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">📚</button>
       <button class="btn btn-secondary queue-header-btn" id="openQueueBtn" title="收書佇列" style="padding: 0.45rem 0.8rem; font-size: 1.1rem; display: inline-flex; align-items: center; gap: 0.35rem;">
         <span class="queue-icon" id="queueIcon">📥</span>
         <span id="queueBadge" style="font-size: 0.95rem; font-weight: 700; background: var(--accent); color: #000; border-radius: 12px; padding: 0.1rem 0.45rem; line-height: 1;"><script>document.write(localStorage.getItem('cms_queue_count') || '0');</script></span>
@@ -133,6 +135,81 @@
       </div>
       <div id="detailModalContent">
         <!-- 詳情內容由 JS 渲染 -->
+      </div>
+    </div>
+  <!-- 個人書單 Modal -->
+  <div class="modal-backdrop" id="collectionsModal">
+    <div class="modal-card" style="max-width: 900px; width: 95vw; height: 85vh; display: flex; flex-direction: column;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="font-size: 1.5rem;">📚</span>
+          <h2 style="font-size: 1.25rem;">個人書單收藏庫</h2>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button class="btn btn-primary" id="newCollectionBtn" title="新建書單" style="padding: 0.35rem 0.75rem; font-size: 1.1rem;">➕</button>
+          <button class="close-btn" id="closeCollectionsBtn">&times;</button>
+        </div>
+      </div>
+      <div style="display: flex; flex: 1; overflow: hidden; margin-top: 0.5rem; gap: 1rem;">
+        <!-- 左側書單清單 -->
+        <div id="collectionsSidebar" style="width: 240px; border-right: 1px solid var(--border); overflow-y: auto; padding-right: 0.5rem;">
+          <!-- JS 動態渲染書單列表 -->
+        </div>
+        <!-- 右側書單詳情與內藏書籍 -->
+        <div id="collectionMainView" style="flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding-left: 0.5rem;">
+          <!-- JS 動態渲染選定書單內容 -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 快速加入書單 Popover Modal -->
+  <div class="modal-backdrop" id="quickCollectionModal">
+    <div class="modal-card" style="max-width: 380px;">
+      <div class="modal-header">
+        <h3 style="font-size: 1.1rem; display: flex; align-items: center; gap: 0.35rem;">⭐ 加入自訂書單</h3>
+        <button class="close-btn" id="closeQuickCollectionBtn">&times;</button>
+      </div>
+      <div id="quickCollectionList" style="margin: 1rem 0; max-height: 250px; overflow-y: auto;">
+        <!-- Checkbox 清單 -->
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+        <button class="btn btn-primary" id="saveQuickCollectionBtn" style="padding: 0.45rem 1rem;">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 逛線上書攤 / 多階層樹狀分類 Modal -->
+  <div class="modal-backdrop" id="bookstallModal">
+    <div class="modal-card" style="max-width: 1100px; width: 95vw; height: 90vh; display: flex; flex-direction: column;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="font-size: 1.6rem;">🏪</span>
+          <div>
+            <h2 style="font-size: 1.25rem;">線上書攤 · 圖書館各架藏書漫遊</h2>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.15rem;">免輸入關鍵字，沿著中文圖書分類樹自由探索各架位典藏</p>
+          </div>
+        </div>
+        <button class="close-btn" id="closeBookstallBtn">&times;</button>
+      </div>
+      <div class="bookstall-layout" style="display: flex; flex: 1; overflow: hidden; margin-top: 0.75rem; gap: 1rem;">
+        <!-- 左側多階層可折疊樹狀分類面板 -->
+        <div class="category-tree-panel" id="categoryTreePanel" style="width: 280px; min-width: 260px; border-right: 1px solid var(--border); overflow-y: auto; padding-right: 0.5rem;">
+          <div style="font-size: 0.85rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em;">📚 書架分類樹</div>
+          <div id="categoryTreeRoot">
+            <!-- JS 動態渲染多階層樹狀節點 -->
+          </div>
+        </div>
+        <!-- 右側沉浸式書架展示區 -->
+        <div class="shelf-content-area" id="shelfContentArea" style="flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding-left: 0.5rem;">
+          <div class="shelf-header" id="shelfHeader" style="margin-bottom: 1rem;">
+            <div class="shelf-breadcrumbs" id="shelfBreadcrumbs" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.35rem;">文學與小說</div>
+            <h3 id="shelfTitle" style="font-size: 1.4rem; display: flex; align-items: center; gap: 0.5rem;">📚 正在載入書架...</h3>
+          </div>
+          <div class="shelf-grid" id="shelfGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
+            <!-- JS 動態渲染書架各本書 -->
+          </div>
+        </div>
       </div>
     </div>
   </div>
