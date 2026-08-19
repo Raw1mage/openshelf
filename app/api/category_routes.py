@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from app.db.dao import CatalogDAO
 from app.models.catalog import CategoryRead, CategoryTreeNode, CategoryWorksResponse
 
-router = APIRouter(prefix="/categories", tags=["Categories"])
+router = APIRouter(prefix="/api/categories", tags=["Categories"])
 
 
 def get_dao() -> CatalogDAO:
