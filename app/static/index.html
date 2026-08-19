@@ -20,6 +20,7 @@
       <span class="logo-text">CMS圖書館</span>
     </a>
     <div class="header-actions">
+      <button class="btn btn-secondary" id="openSettingsBtn" title="系統設定" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">⚙️</button>
       <button class="btn btn-secondary" id="openBookstallBtn" title="逛線上書攤 / 分類導航" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">🏪</button>
       <button class="btn btn-secondary" id="openCollectionsBtn" title="我的個人書單" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">📚</button>
       <button class="btn btn-secondary queue-header-btn" id="openQueueBtn" title="收書佇列" style="padding: 0.45rem 0.8rem; font-size: 1.1rem; display: inline-flex; align-items: center; gap: 0.35rem;">
@@ -131,12 +132,77 @@
     <div class="modal-card">
       <div class="modal-header">
         <h2 style="font-size: 1.25rem;">書籍元資料詳情</h2>
-        <button class="close-btn" id="closeDetailBtn">&times;</button>
+        <button class="close-btn" id="closeDetailBtn" title="關閉">&times;</button>
       </div>
       <div id="detailModalContent">
         <!-- 詳情內容由 JS 渲染 -->
       </div>
     </div>
+  </div>
+
+  <!-- 系統設定 Modal -->
+  <div class="modal-backdrop" id="settingsModal">
+    <div class="modal-card" style="max-width: 580px;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
+        <h2 style="font-size: 1.25rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
+          <span>⚙️</span> 系統設定
+        </h2>
+        <button class="close-btn" id="closeSettingsBtn" title="關閉">&times;</button>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 1.25rem; margin-top: 1rem;">
+        
+        <!-- 項目 1: 收書佇列本機磁碟同步 -->
+        <div style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 1rem;">
+          <h3 style="font-size: 1rem; color: var(--accent); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.35rem; margin-top: 0;">
+            <span>💾</span> 收書同步保存至本機硬碟
+          </h3>
+          <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 0.75rem;">
+            開啟後，當收書佇列將書籍鏡像落地時，瀏覽器會同時自動下載或寫入一份完整原始檔案至您指定的本機資料夾。
+          </p>
+          
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin-bottom: 0.75rem; user-select: none;">
+            <input type="checkbox" id="autoDownloadLocalCheckbox" style="width: 18px; height: 18px; cursor: pointer;">
+            <span style="font-weight: 600; font-size: 0.9rem;">鏡像完成時，自動在本地硬碟儲存一份</span>
+          </label>
+
+          <div id="localDirPickerSection" style="background: var(--bg-secondary); border-radius: 6px; padding: 0.75rem; border: 1px dashed var(--border);">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+              <span id="localDirPathDisplay" style="font-size: 0.82rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                📁 目前路徑: 瀏覽器預設下載目錄
+              </span>
+              <button class="btn btn-secondary" id="selectLocalDirBtn" title="選取本機儲存資料夾" style="padding: 0.35rem 0.75rem; font-size: 0.85rem; white-space: nowrap;">📁 指定資料夾</button>
+            </div>
+            <p id="localDirNotice" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.4rem; margin-bottom: 0;">
+              💡 支援 Chrome / Edge File System API 自動無感直接寫入；若未指定資料夾則透過瀏覽器下載機制觸發。
+            </p>
+          </div>
+        </div>
+
+        <!-- 項目 2: Chrome 擴充套件 -->
+        <div style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <h3 style="font-size: 1rem; color: var(--accent); display: flex; align-items: center; gap: 0.35rem; margin: 0;">
+              <span>🌐</span> Chrome 原生書籤同步擴充套件
+            </h3>
+            <span id="extStatusBadgeSettings" class="tag" style="background: rgba(148, 163, 184, 0.15); color: var(--text-muted);">未連線</span>
+          </div>
+          <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 0.75rem;">
+            安裝擴充套件後，個人書單將自動雙向同步至 Chrome「CMS圖書館」書籤資料夾，達成零伺服器負擔的個人化跨裝置同步。
+          </p>
+          <a href="static/extension.zip" download class="btn btn-primary" title="下載 Chrome 擴充套件 (.zip)" style="display: inline-flex; align-items: center; gap: 0.35rem; text-decoration: none; padding: 0.5rem 1rem; font-size: 0.9rem;">
+            📥 下載 Chrome 擴充套件 (.zip)
+          </a>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.75rem; line-height: 1.6; background: var(--bg-secondary); padding: 0.6rem; border-radius: 6px;">
+            1. 下載並解壓縮 <code>extension.zip</code><br>
+            2. 在 Chrome 開啟 <code>chrome://extensions</code> 並開啟右上角「開發人員模式」<br>
+            3. 點選「載入未打包項目」，選取解壓縮後的資料夾即完成！
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <!-- 個人書單 Modal -->
   <div class="modal-backdrop" id="collectionsModal">
     <div class="modal-card" style="max-width: 900px; width: 95vw; height: 85vh; display: flex; flex-direction: column;">
@@ -146,13 +212,13 @@
           <div>
             <h2 style="font-size: 1.25rem;">個人書單收藏庫</h2>
             <div id="extStatusBadge" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.15rem;">
-              <span>⚪ 本地模式 • <a href="static/extension.zip" download style="color: var(--accent); text-decoration: underline;" title="點擊下載 Chrome 原生書籤同步擴充套件">下載 Chrome 擴充套件啟用原生同步</a></span>
+              <span>⚪ 本地模式 • 可在「⚙️ 設定」中下載 Chrome 擴充套件啟用原生同步</span>
             </div>
           </div>
         </div>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
           <button class="btn btn-primary" id="newCollectionBtn" title="新建書單" style="padding: 0.35rem 0.75rem; font-size: 1.1rem;">➕</button>
-          <button class="close-btn" id="closeCollectionsBtn">&times;</button>
+          <button class="close-btn" id="closeCollectionsBtn" title="關閉">&times;</button>
         </div>
       </div>
       <div style="display: flex; flex: 1; overflow: hidden; margin-top: 0.5rem; gap: 1rem;">
@@ -173,13 +239,13 @@
     <div class="modal-card" style="max-width: 380px;">
       <div class="modal-header">
         <h3 style="font-size: 1.1rem; display: flex; align-items: center; gap: 0.35rem;">⭐ 加入自訂書單</h3>
-        <button class="close-btn" id="closeQuickCollectionBtn">&times;</button>
+        <button class="close-btn" id="closeQuickCollectionBtn" title="關閉">&times;</button>
       </div>
       <div id="quickCollectionList" style="margin: 1rem 0; max-height: 250px; overflow-y: auto;">
         <!-- Checkbox 清單 -->
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
-        <button class="btn btn-primary" id="saveQuickCollectionBtn" style="padding: 0.45rem 1rem;">儲存</button>
+        <button class="btn btn-primary" id="saveQuickCollectionBtn" title="儲存收藏變更" style="padding: 0.45rem 1rem;">儲存</button>
       </div>
     </div>
   </div>
@@ -195,7 +261,7 @@
             <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.15rem;">免輸入關鍵字，沿著中文圖書分類樹自由探索各架位典藏</p>
           </div>
         </div>
-        <button class="close-btn" id="closeBookstallBtn">&times;</button>
+        <button class="close-btn" id="closeBookstallBtn" title="關閉">&times;</button>
       </div>
       <div class="bookstall-layout" style="display: flex; flex: 1; overflow: hidden; margin-top: 0.75rem; gap: 1rem;">
         <!-- 左側多階層可折疊樹狀分類面板 -->

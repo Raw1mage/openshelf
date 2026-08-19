@@ -136,6 +136,31 @@ function initEventListeners() {
   openUploadBtn.addEventListener("click", () => uploadModal.classList.add("active"));
   closeUploadBtn.addEventListener("click", () => uploadModal.classList.remove("active"));
 
+  // 系統設定 Modal 事件
+  const settingsModal = document.getElementById("settingsModal");
+  const openSettingsBtn = document.getElementById("openSettingsBtn");
+  const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+  if (openSettingsBtn) openSettingsBtn.addEventListener("click", () => {
+    initSettingsModal();
+    settingsModal.classList.add("active");
+  });
+  if (closeSettingsBtn) closeSettingsBtn.addEventListener("click", () => settingsModal.classList.remove("active"));
+
+  // 本機下載偏好勾選
+  const autoDownloadLocalCheckbox = document.getElementById("autoDownloadLocalCheckbox");
+  if (autoDownloadLocalCheckbox) {
+    autoDownloadLocalCheckbox.checked = localStorage.getItem("cms_auto_download_local") === "true";
+    autoDownloadLocalCheckbox.addEventListener("change", (e) => {
+      localStorage.setItem("cms_auto_download_local", e.target.checked);
+    });
+  }
+
+  // 選取本機儲存資料夾
+  const selectLocalDirBtn = document.getElementById("selectLocalDirBtn");
+  if (selectLocalDirBtn) {
+    selectLocalDirBtn.addEventListener("click", handleSelectLocalDirectory);
+  }
+
   // 個人書單 Modal 事件
   const openCollectionsBtn = document.getElementById("openCollectionsBtn");
   const closeCollectionsBtn = document.getElementById("closeCollectionsBtn");
@@ -442,46 +467,47 @@ function renderLiveBookCard(item) {
     leftIndicatorHtml = `<span style="font-size: 1.25rem;" title="本地已收錄">💾</span>`;
     statusBadgeHtml = `<span class="tag tag-local">💾 本地已收錄</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-primary" onclick="openReader('${targetWorkId}')" title="立即閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
+      <button class="btn btn-primary" onclick="openReader('${targetWorkId}')" title="線上閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
       <button class="btn btn-secondary" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(item.title)}')" title="加入個人書單" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⭐</button>
-      <button class="btn btn-outline" onclick="openDetail('${targetWorkId}')" title="詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+      <a class="btn btn-secondary" href="${BASE_PATH}/api/files/${targetWorkId}/raw" download title="下載原檔" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; text-decoration: none; display: inline-flex; align-items: center;">📥</a>
+      <button class="btn btn-outline" onclick="openDetail('${targetWorkId}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   } else if (isDownloading) {
-    leftIndicatorHtml = `<span class="pulse-anim" style="font-size: 1.15rem;" title="下載中">⏳</span>`;
+    leftIndicatorHtml = `<span class="pulse-anim" style="font-size: 1.15rem;" title="正在鏡像下載 (${queueJob.progress_percent}%)">⏳</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(56, 189, 248, 0.18); color: var(--accent); border: 1px solid var(--accent);"><span class="pulse-anim">⏳</span> 正在鏡像 (${queueJob.progress_percent}%)</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-secondary" onclick="document.getElementById('openQueueBtn').click()" title="點擊查看收書佇列">📥 正在鏡像 (${queueJob.progress_percent}%)</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')">ℹ️ 詳情</button>
+      <button class="btn btn-secondary" onclick="openQueueModal()" title="正在鏡像 (${queueJob.progress_percent}%)，點擊查看佇列" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📥</button>
+      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   } else if (isQueued) {
-    leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="排隊中">⏳</span>`;
+    leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="排隊收書中">⏳</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(245, 158, 11, 0.18); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4);">⏳ 排隊收書中</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-secondary" onclick="document.getElementById('openQueueBtn').click()" title="點擊查看收書佇列">⏳ 排隊中</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')">ℹ️ 詳情</button>
+      <button class="btn btn-secondary" onclick="openQueueModal()" title="排隊中，點擊查看佇列" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⏳</button>
+      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   } else if (isPaused) {
     leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="已暫停">⏸️</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(148, 163, 184, 0.18); color: var(--text-muted);">⏸️ 暫停收書中</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-outline" onclick="resumeJob('${queueJob.job_id}')" title="繼續收書">▶️ 繼續收書</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')">ℹ️ 詳情</button>
+      <button class="btn btn-outline" onclick="resumeJob('${queueJob.job_id}')" title="繼續收書" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">▶️</button>
+      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   } else if (isFailed) {
     leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="下載失敗">❌</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(239, 68, 68, 0.18); color: #ef4444;">❌ 收書失敗</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-primary" onclick="retryJob('${queueJob.job_id}')" title="重新續傳">🔄 重新收書</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')">ℹ️ 詳情</button>
+      <button class="btn btn-primary" onclick="retryJob('${queueJob.job_id}')" title="重新收書" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">🔄</button>
+      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   } else {
     leftIndicatorHtml = item.md5 ? `
-      <input type="checkbox" class="book-select-checkbox" data-md5="${item.md5}" style="cursor: pointer; width: 18px; height: 18px;">
+      <input type="checkbox" class="book-select-checkbox" data-md5="${item.md5}" title="勾選以進行批次收書" style="cursor: pointer; width: 18px; height: 18px;">
     ` : `<span style="font-size: 1.25rem;">🌐</span>`;
     statusBadgeHtml = `<span class="tag tag-remote">🌐 公網資源</span>`;
     actionButtonsHtml = `
-      <button class="btn btn-primary" id="btn-dl-${item.md5}" onclick="triggerSingleDownload('${item.md5}')">📥 鏡像收書</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')">ℹ️ 詳情</button>
+      <button class="btn btn-primary" id="btn-dl-${item.md5}" onclick="triggerSingleDownload('${item.md5}')" title="鏡像收書至本地" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📥</button>
+      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
     `;
   }
 
@@ -681,6 +707,22 @@ async function refreshQueueModal() {
       applySortAndRender();
     }
 
+    // 若開啟了本機同步，檢查是否有剛完成且尚未保存至本機磁碟的任務
+    if (localStorage.getItem("cms_auto_download_local") === "true") {
+      let syncedSet;
+      try {
+        syncedSet = new Set(JSON.parse(localStorage.getItem("cms_synced_local_jobs") || "[]"));
+      } catch (e) { syncedSet = new Set(); }
+
+      for (const j of jobs || []) {
+        if (j.status === "completed" && j.work_id && !syncedSet.has(j.job_id)) {
+          syncedSet.add(j.job_id);
+          localStorage.setItem("cms_synced_local_jobs", JSON.stringify(Array.from(syncedSet)));
+          autoSyncBookToLocalDisk(j.work_id, j.title, j.format, j.job_id);
+        }
+      }
+    }
+
     if (!jobs || jobs.length === 0) {
       queueList.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 1.5rem;">目前無下載任務</p>';
       return;
@@ -736,6 +778,7 @@ async function refreshQueueModal() {
                 <button class="btn btn-outline" style="padding: 0.25rem 0.55rem; font-size: 0.95rem; line-height: 1; color: #ef4444; border-color: rgba(239,68,68,0.4);" onclick="deleteJob('${j.job_id}')" title="刪除">🗑️</button>
               ` : ""}
               ${j.status === "completed" && j.work_id ? `
+                <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.95rem; line-height: 1;" onclick="saveSingleBookToLocalDisk('${j.work_id}', '${escapeHtml(j.title)}', '${j.format || 'pdf'}')" title="下載保存至本機硬碟">📥</button>
                 <button class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.95rem; line-height: 1;" onclick="openReader('${j.work_id}')" title="線上閱讀">📖</button>
               ` : ""}
             </div>
@@ -1050,7 +1093,26 @@ function callExtension(action, payload = {}) {
 function updateExtensionStatusIndicator() {
   const badge = document.getElementById("extStatusBadge");
   if (badge) {
-    badge.innerHTML = `<span style="color: #34d399; font-weight: 600;">🟢 Chrome 原生書籤已連線同步</span>`;
+    if (isChromeExtensionAvailable) {
+      badge.innerHTML = `<span style="color: #34d399; font-weight: 600;">🟢 Chrome 原生書籤已連線同步</span>`;
+    } else {
+      badge.innerHTML = `<span>⚪ 本地模式 • 可在「⚙️ 設定」中下載 Chrome 擴充套件啟用原生同步</span>`;
+    }
+  }
+
+  const badgeSettings = document.getElementById("extStatusBadgeSettings");
+  if (badgeSettings) {
+    if (isChromeExtensionAvailable) {
+      badgeSettings.className = "tag tag-local";
+      badgeSettings.style.background = "";
+      badgeSettings.style.color = "";
+      badgeSettings.innerText = "🟢 已連線同步中";
+    } else {
+      badgeSettings.className = "tag";
+      badgeSettings.style.background = "rgba(148, 163, 184, 0.15)";
+      badgeSettings.style.color = "var(--text-muted)";
+      badgeSettings.innerText = "⚪ 未連線 (請安裝插件)";
+    }
   }
 }
 
@@ -1058,6 +1120,95 @@ function updateExtensionStatusIndicator() {
 setTimeout(() => {
   callExtension("PING");
 }, 150);
+
+// === 本機硬碟儲存與系統設定 (Local Disk Storage & Settings) ===
+let localDirectoryHandle = null;
+
+function initSettingsModal() {
+  const autoCheckbox = document.getElementById("autoDownloadLocalCheckbox");
+  if (autoCheckbox) {
+    autoCheckbox.checked = localStorage.getItem("cms_auto_download_local") === "true";
+  }
+  const pathDisplay = document.getElementById("localDirPathDisplay");
+  const savedDirName = localStorage.getItem("cms_local_dir_name");
+  if (pathDisplay) {
+    if (savedDirName) {
+      pathDisplay.innerText = `📁 目前指定: ${savedDirName}`;
+    } else {
+      pathDisplay.innerText = `📁 目前路徑: 瀏覽器預設下載目錄`;
+    }
+  }
+  updateExtensionStatusIndicator();
+}
+
+async function handleSelectLocalDirectory() {
+  if (!window.showDirectoryPicker) {
+    alert("您的瀏覽器不支援直接選取本地資料夾（File System Access API）。系統將透過瀏覽器預設下載機制自動下載保存。");
+    return;
+  }
+  try {
+    const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    if (dirHandle) {
+      localDirectoryHandle = dirHandle;
+      localStorage.setItem("cms_local_dir_name", dirHandle.name);
+      localStorage.setItem("cms_auto_download_local", "true");
+      
+      const autoCheckbox = document.getElementById("autoDownloadLocalCheckbox");
+      if (autoCheckbox) autoCheckbox.checked = true;
+
+      const pathDisplay = document.getElementById("localDirPathDisplay");
+      if (pathDisplay) pathDisplay.innerText = `📁 目前指定: ${dirHandle.name}`;
+      alert(`已成功指定本機儲存目錄: ${dirHandle.name}！收書落地時將自動寫入此資料夾。`);
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      console.error("選取目錄失敗:", err);
+      alert("選取目錄失敗: " + err.message);
+    }
+  }
+}
+
+async function autoSyncBookToLocalDisk(workId, title, format, jobId) {
+  if (localStorage.getItem("cms_auto_download_local") !== "true") return;
+  if (!workId) return;
+
+  await saveSingleBookToLocalDisk(workId, title, format);
+}
+
+async function saveSingleBookToLocalDisk(workId, title, format) {
+  if (!workId) return;
+  const ext = (format || "pdf").toLowerCase().includes("epub") ? "epub" : "pdf";
+  const cleanTitle = (title || "book").replace(/[\\/:*?"<>|]/g, "_").trim();
+  const filename = `${cleanTitle}.${ext}`;
+  const rawUrl = `${BASE_PATH}/api/files/${workId}/raw`;
+
+  // 若使用者已透過 File System Access API 指定本機資料夾，直接寫入檔案
+  if (localDirectoryHandle) {
+    try {
+      const fileHandle = await localDirectoryHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      const res = await fetch(rawUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await res.body.pipeTo(writable);
+      console.log(`[Local Disk Sync] 已成功直接寫入本機硬碟: ${filename}`);
+      return;
+    } catch (fsErr) {
+      console.warn("[Local Disk Sync] File System API 寫入失敗，降級為瀏覽器下載觸發:", fsErr);
+    }
+  }
+
+  // 瀏覽器原生下載觸發
+  const a = document.createElement("a");
+  a.href = rawUrl;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    if (a.parentNode) document.body.removeChild(a);
+  }, 2000);
+  console.log(`[Local Disk Sync] 已觸發瀏覽器下載至本機: ${filename}`);
+}
 
 // === 個人書單 (Personal Collections) ===
 let currentActiveCollectionId = null;
@@ -1463,13 +1614,14 @@ function renderTreeNode(node, parentPath = "") {
   return `
     <div class="tree-node" id="node_${node.category_id}">
       <div class="tree-header ${node.category_id === currentActiveCategoryId ? 'active' : ''}" 
+           title="點擊查看「${escapeHtml(node.name)}」架位藏書"
            onclick="handleCategoryClick('${node.category_id}', '${escapeHtml(node.name)}', '${node.icon}', '${escapeHtml(currentPath)}')">
         <div style="display: flex; align-items: center; gap: 0.35rem; overflow: hidden;">
-          ${hasChildren ? `<span class="tree-expander expanded" onclick="event.stopPropagation(); toggleTreeNode('${node.category_id}')">▶</span>` : `<span style="width: 1.2rem;"></span>`}
+          ${hasChildren ? `<span class="tree-expander expanded" title="展開/折疊分類" onclick="event.stopPropagation(); toggleTreeNode('${node.category_id}')">▶</span>` : `<span style="width: 1.2rem;"></span>`}
           <span>${node.icon || '📖'}</span>
           <span style="font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(node.name)}</span>
         </div>
-        <span class="tree-badge">${node.works_count}</span>
+        <span class="tree-badge" title="共 ${node.works_count} 本藏書">${node.works_count}</span>
       </div>
       ${hasChildren ? `
         <div class="tree-children" id="children_${node.category_id}">
