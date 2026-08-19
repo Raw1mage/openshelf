@@ -1,0 +1,80 @@
+[
+  {
+    "title": "繁體中文版 Libgen 透過 Gateway 檢索與閱讀工作流程",
+    "participants": [
+      "User",
+      "Gateway",
+      "FastAPI_App",
+      "IngestWorker",
+      "NAS_Storage",
+      "SQLite_FTS5"
+    ],
+    "messages": [
+      {
+        "from": "User",
+        "to": "Gateway",
+        "label": "GET /libgen/ (訪問繁體中文首頁)"
+      },
+      {
+        "from": "Gateway",
+        "to": "FastAPI_App",
+        "label": "轉發請求至後端 (root_path=/libgen)"
+      },
+      {
+        "from": "FastAPI_App",
+        "to": "User",
+        "label": "200 OK (渲染繁體中文搜尋介面)"
+      },
+      {
+        "from": "User",
+        "to": "Gateway",
+        "label": "GET /libgen/api/search?q={關鍵字}"
+      },
+      {
+        "from": "Gateway",
+        "to": "FastAPI_App",
+        "label": "轉發 API 請求"
+      },
+      {
+        "from": "FastAPI_App",
+        "to": "SQLite_FTS5",
+        "label": "FTS5 繁簡中文全文檢索"
+      },
+      {
+        "from": "FastAPI_App",
+        "to": "User",
+        "label": "200 OK (回傳書目卡片、格式/語言/MD5與閱讀鏈結)"
+      },
+      {
+        "from": "User",
+        "to": "Gateway",
+        "label": "POST /libgen/api/upload (上傳新書 PDF/EPUB)"
+      },
+      {
+        "from": "Gateway",
+        "to": "FastAPI_App",
+        "label": "轉發上傳請求"
+      },
+      {
+        "from": "FastAPI_App",
+        "to": "NAS_Storage",
+        "label": "寫入原檔至 /data/raw/{sha256}.pdf"
+      },
+      {
+        "from": "FastAPI_App",
+        "to": "IngestWorker",
+        "label": "派發背景解析任務"
+      },
+      {
+        "from": "IngestWorker",
+        "to": "NAS_Storage",
+        "label": "抽取純文字至 /data/parsed/{work_id}.md"
+      },
+      {
+        "from": "IngestWorker",
+        "to": "SQLite_FTS5",
+        "label": "更新 FTS5 索引與 Work 狀態"
+      }
+    ]
+  }
+]

@@ -1,0 +1,46 @@
+[
+  {
+    "id": "TV-1",
+    "description": "原生 PDF 檔案入庫與文字抽取測試向量",
+    "input": {
+      "filename": "sample_native.pdf",
+      "mime_type": "application/pdf",
+      "has_text_layer": true
+    },
+    "expected": {
+      "status": "available_local",
+      "manifestation_format": "pdf_born_digital",
+      "parsed_file_exists": true,
+      "fts5_indexed": true
+    }
+  },
+  {
+    "id": "TV-2",
+    "description": "掃描件 PDF 檔案入庫與 RapidOCR 降級測試向量",
+    "input": {
+      "filename": "sample_scan.pdf",
+      "mime_type": "application/pdf",
+      "has_text_layer": false
+    },
+    "expected": {
+      "status": "available_local",
+      "manifestation_format": "pdf_scanned",
+      "ocr_worker_dispatched": true,
+      "parsed_file_exists": true
+    }
+  },
+  {
+    "id": "TV-3",
+    "description": "EPUB 檔案章節解析測試向量",
+    "input": {
+      "filename": "sample_book.epub",
+      "mime_type": "application/epub+zip"
+    },
+    "expected": {
+      "status": "available_local",
+      "manifestation_format": "epub",
+      "chapters_count_gt": 0,
+      "parsed_file_exists": true
+    }
+  }
+]

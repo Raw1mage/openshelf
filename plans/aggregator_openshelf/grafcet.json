@@ -1,0 +1,122 @@
+[
+  {
+    "StepNumber": 0,
+    "ModuleRef": "A1",
+    "StepType": "initial",
+    "StepAction": "系統待命就緒，監聽檔案上傳或目錄掃描事件",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      5
+    ],
+    "LinkOutputNumber": [
+      1
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "偵測到新 PDF/EPUB 檔案或收到上傳請求"
+    ],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 1,
+    "ModuleRef": "A1",
+    "StepType": "normal",
+    "StepAction": "計算檔案 SHA256/MD5 並建立 Work / Location 紀錄",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      0
+    ],
+    "LinkOutputNumber": [
+      2
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "原檔寫入 /data/raw/ 完成且無重複"
+    ],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 2,
+    "ModuleRef": "A2",
+    "StepType": "normal",
+    "StepAction": "執行 PyMuPDF 文本抽取；若文字稀疏則派發 RapidOCR 背景解析",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      1
+    ],
+    "LinkOutputNumber": [
+      3
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "文字抽取或 OCR 辨識完成"
+    ],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 3,
+    "ModuleRef": "A3",
+    "StepType": "normal",
+    "StepAction": "純文字 Markdown 寫入 /data/parsed/ 並同步更新 SQLite FTS5 索引",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      2
+    ],
+    "LinkOutputNumber": [
+      4
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "FTS5 虛擬表索引更新成功"
+    ],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 4,
+    "ModuleRef": "A4",
+    "StepType": "normal",
+    "StepAction": "標記 Work 為 available_local，Web UI 即可全文搜尋與內嵌閱讀",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      3
+    ],
+    "LinkOutputNumber": [
+      5
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "入庫狀態更新為 completed"
+    ],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 5,
+    "ModuleRef": "A1",
+    "StepType": "normal",
+    "StepAction": "完成單檔入庫，回到待命狀態",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      4
+    ],
+    "LinkOutputNumber": [
+      0
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "true"
+    ],
+    "SubGrafcet": []
+  }
+]

@@ -1,5 +1,22 @@
+# Dependencies & Virtual Envs
+.venv/
+venv/
 node_modules/
 dist/
-.env
-*.log
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Runtime storage & database files
 data/
+/data/
+*.log
+.env
+
+# OS / Editor files
+.DS_Store
+.vscode/
+.idea/

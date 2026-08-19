@@ -1,0 +1,81 @@
+{
+  "diagram_title": "openshelf 核心資料處理與檢索呈現 (A0 Context)",
+  "node_reference": "A0",
+  "activities": [
+    {
+      "id": "A1",
+      "title": "原檔匯入與儲存",
+      "description": "接收本地或下載之 PDF/EPUB 檔案，計算雜湊並存入 NAS 原檔區",
+      "decomposition": null
+    },
+    {
+      "id": "A2",
+      "title": "文本抽取與 OCR 解析",
+      "description": "以 PyMuPDF 提取原生文字，掃描件自動調度 RapidOCR 處理",
+      "decomposition": null
+    },
+    {
+      "id": "A3",
+      "title": "書目建模與 FTS5 索引",
+      "description": "建立 Work/Location 二層實體並將純文字寫入 SQLite FTS5 索引",
+      "decomposition": null
+    },
+    {
+      "id": "A4",
+      "title": "Web 檢索與閱讀服務",
+      "description": "提供 REST API 搜尋、內文高亮與內嵌 PDF.js/EPUB.js 閱讀進度記憶",
+      "decomposition": null
+    }
+  ],
+  "arrows": [
+    {
+      "id": "AR1",
+      "source": "EXTERNAL",
+      "target": "A1:input",
+      "type": "input",
+      "label": "PDF / EPUB 書籍原檔"
+    },
+    {
+      "id": "AR2",
+      "source": "EXTERNAL",
+      "target": "A1:control",
+      "type": "control",
+      "label": "Docker Compose 與 NAS Volume 配置"
+    },
+    {
+      "id": "AR3",
+      "source": "EXTERNAL",
+      "target": "A2:mechanism",
+      "type": "mechanism",
+      "label": "PyMuPDF 與 RapidOCR (CPU ONNX)"
+    },
+    {
+      "id": "AR4",
+      "source": "A1:output",
+      "target": "A2:input",
+      "type": "input",
+      "label": "NAS 原檔路徑與 MD5/SHA256"
+    },
+    {
+      "id": "AR5",
+      "source": "A2:output",
+      "target": "A3:input",
+      "type": "input",
+      "label": "解析純文字 Markdown/TXT"
+    },
+    {
+      "id": "AR6",
+      "source": "A3:output",
+      "target": "A4:input",
+      "type": "input",
+      "label": "SQLite FTS5 索引與 Work 紀錄"
+    },
+    {
+      "id": "AR7",
+      "source": "A4:output",
+      "target": "EXTERNAL",
+      "type": "output",
+      "label": "Web 檢索結果與閱讀器介面"
+    }
+  ]
+}

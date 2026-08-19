@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>閱讀器 — CMS圖書館</title>
+  <script>
+    // 動態依據當前 URL 設定 base 標籤，確保 /libgen/reader 與 /reader 皆能精確載入靜態資源
+    const baseEl = document.createElement('base');
+    baseEl.href = window.location.pathname.startsWith('/libgen') ? '/libgen/' : '/';
+    document.head.appendChild(baseEl);
+  </script>
+  <link rel="stylesheet" href="static/css/style.css">
+  <style>
+    body {
+      background-color: #0b0f19;
+      overflow: hidden;
+    }
+    .reader-header {
+      background: rgba(15, 23, 42, 0.95);
+      border-bottom: 1px solid var(--border);
+      padding: 0.6rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+    }
+    .reader-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .reader-container {
+      flex: 1;
+      height: calc(100vh - 58px);
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 1.5rem;
+      position: relative;
+      cursor: grab;
+      user-select: none;
+    }
+    .reader-container.is-dragging {
+      cursor: grabbing;
+      user-select: none;
+    }
+    #pdfViewer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.5rem;
+      cursor: inherit;
+    }
+    #epubViewer {
+      width: 100%;
+      max-width: 900px;
+      height: 100%;
+      min-height: calc(100vh - 120px);
+      background: #1e293b;
+      border-radius: 8px;
+      padding: 1rem;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      cursor: inherit;
+    }
+    canvas {
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      border-radius: 4px;
+      background-color: #ffffff;
+      cursor: inherit;
+    }
+    .page-input {
+      width: 50px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      text-align: center;
+      padding: 0.25rem;
+      border-radius: 4px;
+    }
+
+    /* 最左與最右細長翻頁通道 (Narrow Edge Pagination Channels) */
+    .page-edge-zone {
+      position: fixed;
+      top: 58px;
+      bottom: 0;
+      width: 48px;
+      z-index: 80;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0.35;
+      background: rgba(15, 23, 42, 0.45);
+      backdrop-filter: blur(6px);
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+    .zone-left {
+      left: 0;
+      border-right: 1px solid rgba(56, 189, 248, 0.2);
+    }
+    .zone-right {
+      right: 0;
+      border-left: 1px solid rgba(56, 189, 248, 0.2);
+    }
+    .page-edge-zone:hover {
+      opacity: 1;
+      width: 58px;
+      background: rgba(56, 189, 248, 0.2);
+      border-color: var(--accent);
+      box-shadow: 0 0 20px rgba(56, 189, 248, 0.35);
+    }
+    .edge-hint {
+      font-size: 2.2rem;
+      color: var(--accent);
+      font-weight: 500;
+      pointer-events: none;
+      text-shadow: 0 0 15px var(--accent-glow);
+    }
+
+    /* 底部懸浮快速翻頁進度條 */
+    .floating-scrubber {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--accent);
+      border-radius: 30px;
+      padding: 0.55rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      z-index: 90;
+      box-shadow: 0 10px 35px rgba(0,0,0,0.8), 0 0 20px rgba(56,189,248,0.25);
+      opacity: 0.92;
+      transition: all 0.25s ease;
+    }
+    .floating-scrubber:hover, .floating-scrubber.active {
+      opacity: 1;
+      transform: translateX(-50%) translateY(-2px);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.9), 0 0 25px var(--accent-glow);
+    }
+    .reader-slider {
+      width: 320px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
+    .scrubber-bubble {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 80px;
+      text-align: center;
+    }
+
+    .spread-container {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+    }
+  </style>
+  <!-- PDF.js CDN (jsdelivr 提供完整的 CJK CMaps 與 standard fonts) -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <!-- ePub.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
+</head>
+<body>
+
+  <header class="reader-header">
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <button class="btn btn-icon btn-outline" title="返回書庫" onclick="window.history.back() || window.close()" style="padding: 0.4rem 0.7rem; font-size: 1.05rem;">⬅</button>
+      <span id="readerTitle" style="font-weight: 700; font-size: 1.05rem; max-width: 450px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">載入中...</span>
+    </div>
+
+    <div class="reader-toolbar">
+      <button class="btn btn-icon btn-secondary" id="prevPageBtn" title="上一頁 (Left / PageUp / 點擊畫面左側)" style="padding: 0.4rem 0.75rem;">◀</button>
+      <div style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.95rem; font-weight: 600; color: var(--text-secondary);">
+        <input type="number" id="pageInput" class="page-input" value="1" min="1">
+        <span>/</span>
+        <span id="totalPages">--</span>
+      </div>
+      <button class="btn btn-icon btn-secondary" id="nextPageBtn" title="下一頁 (Right / PageDown / 點擊畫面右側)" style="padding: 0.4rem 0.75rem;">▶</button>
+      
+      <span style="border-left: 1px solid var(--border); height: 22px; margin: 0 0.35rem;"></span>
+
+      <button class="btn btn-icon btn-outline" id="spreadToggleBtn" title="切換單頁 / 雙頁模式" style="padding: 0.4rem 0.75rem;">📖</button>
+      <button class="btn btn-icon btn-outline" id="zoomOutBtn" title="縮小 (Zoom Out)" style="padding: 0.4rem 0.75rem;">➖</button>
+      <button class="btn btn-icon btn-outline" id="zoomInBtn" title="放大 (Zoom In)" style="padding: 0.4rem 0.75rem;">➕</button>
+      <button class="btn btn-icon btn-outline" id="fullscreenBtn" title="全螢幕 (Fullscreen)" style="padding: 0.4rem 0.75rem;">⛶</button>
+      
+      <a class="btn btn-icon btn-outline" id="downloadFullBtn" title="下載完整原始檔案" style="padding: 0.4rem 0.75rem; text-decoration: none; color: var(--text-primary);" href="#" download>📥</a>
+    </div>
+  </header>
+
+  <!-- 畫面兩側快速翻頁感測區 -->
+  <div class="page-edge-zone zone-left" id="zoneLeft" title="點擊翻至上一頁">
+    <span class="edge-hint">‹</span>
+  </div>
+  <div class="page-edge-zone zone-right" id="zoneRight" title="點擊翻至下一頁">
+    <span class="edge-hint">›</span>
+  </div>
+
+  <div class="reader-container" id="readerContainer">
+    <div id="pdfViewer">
+      <div id="canvasWrapper" class="spread-container">
+        <canvas id="pdfCanvas1"></canvas>
+        <canvas id="pdfCanvas2" style="display: none;"></canvas>
+      </div>
+    </div>
+    <div id="epubViewer" style="display: none;"></div>
+  </div>
+
+  <!-- 底部懸浮快速翻頁進度條 -->
+  <div class="floating-scrubber" id="floatingScrubber">
+    <span id="scrubberMin">1</span>
+    <input type="range" id="pageSlider" min="1" max="1" value="1" class="reader-slider">
+    <span id="scrubberMax">1</span>
+    <span class="scrubber-bubble" id="scrubberBubble">第 1 頁</span>
+  </div>
+
+  <script src="static/js/reader.js"></script>
+</body>
+</html>

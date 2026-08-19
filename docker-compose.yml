@@ -1,0 +1,17 @@
+services:
+  openshelf:
+    build: .
+    container_name: openshelf-app
+    restart: unless-stopped
+    ports:
+      - "${OPENSHELF_PORT:-8088}:8000"
+    environment:
+      - DATA_DIR=/data
+      - ROOT_PATH=/libgen
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      # rawdb NAS (192.168.100.40) 永久儲存空間
+      - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/raw:/data/raw
+      - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/parsed:/data/parsed
+      - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/db:/data/db

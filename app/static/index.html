@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CMS圖書館</title>
+  <script>
+    const baseEl = document.createElement('base');
+    baseEl.href = window.location.pathname.startsWith('/libgen') ? '/libgen/' : '/';
+    document.head.appendChild(baseEl);
+  </script>
+  <link rel="stylesheet" href="static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
+</head>
+<body>
+
+  <header>
+    <a href="./" class="logo-container">
+      <span class="logo-icon">📚</span>
+      <span class="logo-text">CMS圖書館</span>
+    </a>
+    <div class="header-actions">
+      <button class="btn btn-secondary queue-header-btn" id="openQueueBtn" title="收書佇列" style="padding: 0.45rem 0.8rem; font-size: 1.1rem; display: inline-flex; align-items: center; gap: 0.35rem;">
+        <span class="queue-icon" id="queueIcon">📥</span>
+        <span id="queueBadge" style="font-size: 0.95rem; font-weight: 700; background: var(--accent); color: #000; border-radius: 12px; padding: 0.1rem 0.45rem; line-height: 1;"><script>document.write(localStorage.getItem('cms_queue_count') || '0');</script></span>
+        <div class="queue-mini-bar" id="queueMiniBar" style="display: none;">
+          <div class="queue-mini-progress" id="queueMiniProgress" style="width: 0%;"></div>
+        </div>
+      </button>
+      <button class="btn btn-primary" id="openUploadBtn" title="手動上傳書籍" style="padding: 0.45rem 0.85rem; font-size: 1.15rem;">➕</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero-section">
+      <div class="search-box-wrapper">
+        <input type="text" id="searchInput" class="search-input" placeholder="輸入書名、作者、ISBN、DOI、MD5、引文或內文關鍵字..." autofocus>
+        <button class="btn btn-primary" id="searchBtn" title="搜尋全庫" style="padding: 0.65rem 1.35rem; font-size: 1.15rem;">🔍</button>
+      </div>
+
+      <div class="filter-bar" id="filterBar">
+        <span style="font-size: 0.85rem; color: var(--text-muted); align-self: center;">格式：</span>
+        <button class="filter-chip active" data-type="format" data-val="all">全部格式</button>
+        <button class="filter-chip" data-type="format" data-val="pdf_born_digital">原生 PDF</button>
+        <button class="filter-chip" data-type="format" data-val="pdf_scanned">掃描件 PDF</button>
+        <button class="filter-chip" data-type="format" data-val="epub">EPUB</button>
+
+        <span style="font-size: 0.85rem; color: var(--text-muted); align-self: center; margin-left: 0.5rem;">語言：</span>
+        <button class="filter-chip active" data-type="language" data-val="all">全部語言</button>
+        <button class="filter-chip" data-type="language" data-val="zh">繁體/簡體中文</button>
+        <button class="filter-chip" data-type="language" data-val="en">English</button>
+      </div>
+    </section>
+
+    <div class="results-header" id="resultsHeader" style="display: none;">
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <input type="checkbox" id="selectAllCheckbox" style="display: none; cursor: pointer; width: 16px; height: 16px;">
+        <span id="totalCount"></span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.4rem;">
+        <label for="sortSelect" style="font-size: 0.85rem; color: var(--text-muted);">排序：</label>
+        <select id="sortSelect" class="sort-select">
+          <option value="relevance">依關聯度與落地狀態</option>
+          <option value="year_desc">📅 出版年份：新 ➔ 舊 (最新版優先)</option>
+          <option value="year_asc">📅 出版年份：舊 ➔ 新</option>
+          <option value="size_desc">💾 檔案大小：大 ➔ 小</option>
+          <option value="title_asc">🔤 書名：A ➔ Z</option>
+        </select>
+      </div>
+    </div>
+
+    <section id="bookList" class="book-list">
+      <!-- 僅在使用者執行搜尋後顯示結果 -->
+    </section>
+  </main>
+
+  <!-- 批次下載懸浮列 -->
+  <div id="batchBar" class="batch-bar" style="display: none;">
+    <span>已選取 <strong id="selectedCount" style="color: var(--accent); font-size: 1.1rem;">0</strong> 本書籍</span>
+    <button class="btn btn-primary" id="batchDownloadBtn">⚡ 一鍵批次鏡像至本地</button>
+  </div>
+
+  <!-- 下載佇列 Modal -->
+  <div class="modal-backdrop" id="queueModal">
+    <div class="modal-card resizable-card" id="queueModalCard">
+      <div class="modal-header draggable-header" id="queueModalHeader" style="align-items: center;">
+        <h2 style="font-size: 1.25rem; margin: 0;">📥 收書佇列</h2>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <button class="btn btn-icon btn-secondary" id="clearCompletedBtn" title="清理所有已完成項目" style="padding: 0.4rem 0.65rem; font-size: 1.05rem; line-height: 1;">🧹</button>
+          <button class="btn btn-icon btn-outline" id="minimizeQueueBtn" title="縮小至背景（不會中斷下載）" style="padding: 0.4rem 0.65rem; font-size: 1.05rem; line-height: 1;">➖</button>
+        </div>
+      </div>
+      <div id="queueList" style="flex: 1; overflow-y: auto; max-height: unset;">
+        <p style="color: var(--text-secondary); text-align: center; padding: 1.5rem;">目前無進行中之下載任務</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 上傳入庫 Modal -->
+  <div class="modal-backdrop" id="uploadModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 style="font-size: 1.25rem;">上傳書籍檔案入庫</h2>
+        <button class="close-btn" id="closeUploadBtn">&times;</button>
+      </div>
+      <form id="uploadForm">
+        <div class="form-group">
+          <div class="drop-zone" id="dropZone">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">📁</div>
+            <p id="fileSelectNotice">點選或將 PDF / EPUB 檔案拖曳至此處</p>
+            <input type="file" id="fileInput" accept=".pdf,.epub" style="display: none;">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="uploadTitle">自訂書名（選填，預設由檔案自動提取）</label>
+          <input type="text" id="uploadTitle" class="form-input" placeholder="例如: 演算法導論 (第四版)">
+        </div>
+        <div class="form-group">
+          <label for="uploadAuthor">自訂作者（選填）</label>
+          <input type="text" id="uploadAuthor" class="form-input" placeholder="例如: Thomas H. Cormen">
+        </div>
+        <button type="submit" class="btn btn-primary" id="uploadSubmitBtn" style="width: 100%; justify-content: center; padding: 0.75rem;">開始上傳與自動解析</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 書目詳情 Modal -->
+  <div class="modal-backdrop" id="detailModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 style="font-size: 1.25rem;">書籍元資料詳情</h2>
+        <button class="close-btn" id="closeDetailBtn">&times;</button>
+      </div>
+      <div id="detailModalContent">
+        <!-- 詳情內容由 JS 渲染 -->
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <p>Thesmart AI copyright 2026</p>
+  </footer>
+
+  <script src="static/js/app.js"></script>
+</body>
+</html>

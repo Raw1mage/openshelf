@@ -1,0 +1,441 @@
+{
+  "model_version": "1.0.0-draft",
+  "decided_in": "design.md DD-1 .. DD-9",
+  "principles": [
+    "主鍵是內部 surrogate，永不使用 DOI/ISBN 當主鍵 —— 本地書兩者皆無，且外部識別碼會被上游修正。",
+    "NULL 一律代表『此欄位對該來源不適用或未知』，永不隱含 0。排序層必須顯式處理，禁止 COALESCE(x, 0)。",
+    "來源特有欄位下沉到 sub-entity，work 只保留兩個世界都成立的欄位。",
+    "所有正規化都可重放：source_record 保留上游原始 bytes，work 是衍生物。"
+  ],
+  "schemas": [
+    {
+      "name": "work",
+      "kind": "table",
+      "purpose": "檢索命中的單位、去重的單位、排序的單位。一次搜尋結果的一列 = 一個 work。跨本地書與 OpenAlex 共用同一張表。",
+      "fields": [
+        {
+          "name": "work_id",
+          "type": "TEXT PRIMARY KEY",
+          "required": true,
+          "notes": "內部 surrogate，格式 'wk_' + ULID。DD-1：不用 DOI 當主鍵，因為 (a) 本地書沒有 (b) 去重合併時需能改指向而不破壞既有引用 (c) 同一 work 可能同時有 DOI 與 ISBN，主鍵不能二選一。"
+        },
+        {
+          "name": "title",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "唯一無條件 required 的內容欄位。本地書若無 metadata 則由檔名推導。空字串不合法；真的推不出來就填檔名本身。"
+        },
+        {
+          "name": "title_provenance",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["external_authority", "embedded_metadata", "filename_parsed", "ocr_first_page", "user_edited"],
+          "notes": "DD-4：title 一律有值，但『怎麼來的』決定它能不能拿去做去重比對。filename_parsed 與 ocr_first_page 屬低信心，不得作為唯一去重依據。"
+        },
+        {
+          "name": "work_type",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["book", "article", "thesis", "report", "chapter", "preprint", "unknown"],
+          "notes": "允許 unknown，且 unknown 是本地書入庫時的合法初值。不允許 NULL —— NULL 與 unknown 的差別在於後者是『已知的未知』。"
+        },
+        {
+          "name": "language",
+          "type": "TEXT",
+          "required": false,
+          "notes": "BCP-47。NULL = 未偵測。本地掃描件在 OCR 前恆為 NULL。"
+        },
+        {
+          "name": "publication_year",
+          "type": "INTEGER",
+          "required": false,
+          "notes": "NULL = 不知道。本地書常態為 NULL，不得填 0 或 9999。"
+        },
+        {
+          "name": "authors_display",
+          "type": "TEXT",
+          "required": false,
+          "notes": "扁平顯示字串，供列表呈現與模糊比對。結構化作者在 authorship 表。DD-5：本地書不做作者消歧，只存字串。"
+        },
+        {
+          "name": "availability_tier",
+          "type": "INTEGER NOT NULL",
+          "required": true,
+          "enum_int": [0, 1, 2, 3],
+          "notes": "DD-6 排序主分組。0=本地已落地且已解析 1=本地已落地未解析 2=外部可取得且授權允許保存 3=僅知其存在(找得到不一定拿得到)。由 location 表推導後物化以利排序。對應 proposal.md『找得到+導流』vs『拿得到+不會消失』。"
+        },
+        {
+          "name": "relevance_authority",
+          "type": "REAL",
+          "required": false,
+          "notes": "DD-7：跨世界排序的唯一權威訊號，值域 [0,1]，NULL 合法且語意明確=『此 work 無任何權威訊號』。本地書由 user_curation_score 映射，OpenAlex 由 cited_by_count 分位數映射。禁止直接比較原始引用數。"
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "ISO-8601。此 work 進入本系統的時間，非出版時間。本地書的『我什麼時候加進來的』即此欄。"
+        },
+        {
+          "name": "updated_at",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "ISO-8601。正規化重放會更新此欄。"
+        },
+        {
+          "name": "merged_into",
+          "type": "TEXT",
+          "required": false,
+          "notes": "FK -> work.work_id。非 NULL 表示此 work 已判定為重複並合併到另一個。DD-3：合併採 tombstone 不採 DELETE，舊 id 永遠可解析，去重誤判可逆。查詢預設 WHERE merged_into IS NULL。"
+        }
+      ]
+    },
+    {
+      "name": "identifier",
+      "kind": "table",
+      "purpose": "DD-2：外部識別碼的分層存放。work 主鍵是 surrogate，所有外部識別碼一律降級為此表的一列。這是『主鍵怎麼定』的完整答案的後半 —— 不是二選一，是全部並存。",
+      "fields": [
+        {
+          "name": "identifier_id",
+          "type": "INTEGER PRIMARY KEY",
+          "required": true,
+          "notes": "自增。"
+        },
+        {
+          "name": "work_id",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "FK -> work.work_id。"
+        },
+        {
+          "name": "scheme",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["doi", "isbn13", "isbn10", "issn", "arxiv", "pmid", "pmcid", "openalex", "openlibrary_work", "openlibrary_edition", "oclc", "handle", "urn_uuid", "local_content_hash"],
+          "notes": "封閉集合，新增需改 schema。local_content_hash 讓本地書也有可比對的識別碼 —— 這是無 DOI 物件能參與同一套機制的關鍵。"
+        },
+        {
+          "name": "value",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "正規化後的值（DOI 去前綴小寫、ISBN 去連字號）。原始形式留在 source_record。"
+        },
+        {
+          "name": "confidence",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["asserted", "matched", "guessed"],
+          "notes": "DD-2b：asserted=上游直接宣告(OpenAlex 的 DOI)、matched=本系統比對外部書目後認定、guessed=從檔名/OCR 推測。只有 asserted 與 matched 可用於自動合併；guessed 僅供人工確認。"
+        },
+        {
+          "name": "UNIQUE",
+          "type": "CONSTRAINT (work_id, scheme, value)",
+          "required": true,
+          "notes": "同一 work 同一 scheme 可有多值（一部作品多個 ISBN），故不能對 (work_id, scheme) 設唯一。"
+        }
+      ]
+    },
+    {
+      "name": "manifestation",
+      "kind": "table",
+      "purpose": "DD-8：work 與檔案之間的中間層。回答『同一本書的 EPUB 與掃描 PDF 是一筆還是兩筆』—— 是一個 work、兩個 manifestation。對應 OpenLibrary 的 edition（實查 2026-08-19：/works/OL45804W.json 無 isbn_13，/books/OL7353617M.json 有 isbn_13 且以 works[] 回指 work），也對應 OpenAlex 的 locations[]（實查同日：W2741809807 locations_count=9，每個 location 帶 version/license/source）。",
+      "fields": [
+        {
+          "name": "manifestation_id",
+          "type": "TEXT PRIMARY KEY",
+          "required": true,
+          "notes": "'mf_' + ULID。"
+        },
+        {
+          "name": "work_id",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "FK -> work.work_id。多對一。"
+        },
+        {
+          "name": "version",
+          "type": "TEXT",
+          "required": false,
+          "enum": ["publishedVersion", "acceptedVersion", "submittedVersion", "scan", "unknown"],
+          "notes": "前三值直接沿用 OpenAlex locations[].version 的字面值（實查確認）。scan 是本模型為本地掃描件新增的值 —— 上游沒有這個概念。NULL = 該來源未表態。"
+        },
+        {
+          "name": "format",
+          "type": "TEXT",
+          "required": false,
+          "enum": ["pdf_born_digital", "pdf_scanned", "epub", "html", "xml_jats", "txt", "unknown"],
+          "notes": "pdf_born_digital 與 pdf_scanned 必須分開 —— 後者觸發 OCR 管線(C3)，前者不需要。入庫時無法判定則填 unknown，由解析階段回填。"
+        },
+        {
+          "name": "origin",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["local", "external"],
+          "notes": "DD-8b：這是本模型唯一承認的『兩個世界』分界線，且它落在 manifestation 不落在 work。同一個 work 可同時有 local 與 external manifestation —— 那正是『合一』要達成的狀態。"
+        },
+        {
+          "name": "license_id",
+          "type": "TEXT",
+          "required": false,
+          "notes": "NULL 有明確語意：C5 已證 bronze OA 的 license 就是 null（SOURCE-SURVEY Q-B 實測 10.1038/nature12373）。故 NULL != 可自由保存，而是『免費可讀但無授權』。判定可保存性一律看此欄非 NULL，禁止改看 is_oa。"
+        },
+        {
+          "name": "is_retrievable",
+          "type": "INTEGER NOT NULL",
+          "required": true,
+          "notes": "0/1。此 manifestation 是否真的拿得到檔案。external 且僅有 landing_page 無 pdf_url 者為 0 —— 這批就是 availability_tier=3 的『找得到不一定拿得到』。"
+        },
+        {
+          "name": "external_url",
+          "type": "TEXT",
+          "required": false,
+          "notes": "origin=external 時的 landing page 或 pdf_url。origin=local 時恆為 NULL。"
+        }
+      ]
+    },
+    {
+      "name": "file_object",
+      "kind": "table",
+      "purpose": "DD-9：真正落在硬碟上的位元組。HANDOFF『三份都留』中的原檔與解析文字都是此表的列，用 role 區分。與 manifestation 分開是因為一個 manifestation 會產生多個 file_object（原檔 + 解析文字 + OCR 文字），且解析可重跑。",
+      "fields": [
+        {
+          "name": "file_id",
+          "type": "TEXT PRIMARY KEY",
+          "required": true,
+          "notes": "'fo_' + ULID。"
+        },
+        {
+          "name": "manifestation_id",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "FK -> manifestation.manifestation_id。"
+        },
+        {
+          "name": "role",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["original", "extracted_text", "ocr_text", "thumbnail"],
+          "notes": "original 供閱讀(保留排版)，extracted_text/ocr_text 供搜尋與 RAG(乾淨純文字)。HANDOFF 明列『只留一份才是錯的』。"
+        },
+        {
+          "name": "local_path",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "相對於儲存根目錄的路徑。這是 OpenAlex 側恆不存在的欄位 —— 但它不在 work 上，所以 work 表不需要為外部紀錄留一個永遠 NULL 的欄位。這是把來源特有欄位下沉的具體收益。"
+        },
+        {
+          "name": "sha256",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "位元組層 identity。role=original 時同時作為 identifier.scheme='local_content_hash' 的值來源。位元組相同即同檔，這是唯一零誤判的去重判準（D3 第 0 層）。"
+        },
+        {
+          "name": "size_bytes",
+          "type": "INTEGER NOT NULL",
+          "required": true,
+          "notes": ""
+        },
+        {
+          "name": "produced_by",
+          "type": "TEXT",
+          "required": false,
+          "notes": "role != original 時記錄產生它的工具與版本（例 'rapidocr:PP-OCRv5:1.4.0'）。換 OCR 引擎後可據此找出需重跑的檔案。role=original 時為 NULL。"
+        },
+        {
+          "name": "produced_at",
+          "type": "TEXT",
+          "required": false,
+          "notes": "ISO-8601。同上，role=original 時為 NULL。"
+        }
+      ]
+    },
+    {
+      "name": "reading_state",
+      "kind": "table",
+      "purpose": "DD-5b：使用者特有的狀態（閱讀進度、收藏、註記）。單獨一張表而非 work 的欄位 —— 因為它對三億筆 OpenAlex works 中的 99.9999% 永遠不存在。不存在的列 != NULL 列：前者不佔空間也不需要被排序邏輯處理。",
+      "fields": [
+        {
+          "name": "work_id",
+          "type": "TEXT PRIMARY KEY",
+          "required": true,
+          "notes": "FK -> work.work_id。一對一（單使用者系統，見 proposal Scope OUT：不做帳號系統）。"
+        },
+        {
+          "name": "user_curation_score",
+          "type": "REAL",
+          "required": false,
+          "notes": "DD-7 的本地側權威訊號來源。值域 [0,1]。『使用者主動把這本書放進來了』本身就是一個強訊號 —— 這是本地書對應『引用數』的語意對應物，不是補零。"
+        },
+        {
+          "name": "progress_ratio",
+          "type": "REAL",
+          "required": false,
+          "notes": "[0,1]。NULL = 尚未開啟。"
+        },
+        {
+          "name": "last_opened_at",
+          "type": "TEXT",
+          "required": false,
+          "notes": "ISO-8601。NULL = 從未開啟。"
+        },
+        {
+          "name": "added_at",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "使用者把它加進來的時間。與 work.created_at 可能不同：先從 OpenAlex 建了 work，之後才拿到本地檔。"
+        }
+      ]
+    },
+    {
+      "name": "dedup_signature",
+      "kind": "table",
+      "purpose": "D3：無 DOI 物件的去重候選產生層。每個 work 可有多種指紋，分層使用（見 design.md D3 四層判準）。",
+      "fields": [
+        {
+          "name": "signature_id",
+          "type": "INTEGER PRIMARY KEY",
+          "required": true,
+          "notes": "自增。"
+        },
+        {
+          "name": "work_id",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "FK -> work.work_id。"
+        },
+        {
+          "name": "kind",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["content_sha256", "title_author_year_norm", "minhash_char5gram", "first_page_shingle"],
+          "notes": "content_sha256 零誤判但只能抓完全相同檔；title_author_year_norm 是第一期主力；minhash_char5gram 用字元級 n-gram 而非詞級，因為 OCR 錯字會破壞詞邊界（見 design.md D3 限制說明）。"
+        },
+        {
+          "name": "value",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "指紋值。minhash 存為 band 字串供直接 equi-join 取候選。"
+        },
+        {
+          "name": "INDEX",
+          "type": "INDEX (kind, value)",
+          "required": true,
+          "notes": "候選產生一律走此索引的 equi-join，不做全表兩兩比對。"
+        }
+      ]
+    },
+    {
+      "name": "source_record",
+      "kind": "table",
+      "purpose": "上游原始紀錄的保存區。work 是它的衍生物。正規化規則改變時可重放而不需重抳上游 —— 對 750GB 的 OpenAlex dump 這是必須的。",
+      "fields": [
+        {
+          "name": "source_record_id",
+          "type": "TEXT PRIMARY KEY",
+          "required": true,
+          "notes": "'sr_' + ULID。"
+        },
+        {
+          "name": "work_id",
+          "type": "TEXT",
+          "required": false,
+          "notes": "FK -> work.work_id。NULL = 已抓回但尚未正規化。"
+        },
+        {
+          "name": "source",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["openalex", "openlibrary", "doab", "pmc", "arxiv", "core", "libgen_catalog", "local_scan"],
+          "notes": "C6：unpaywall 不列入 —— OpenAlex 已吃下它，架構上不得當成兩個來源。"
+        },
+        {
+          "name": "raw_json",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "上游原始 bytes。local_scan 時存檔案系統元資料與內嵌 metadata。"
+        },
+        {
+          "name": "fetched_at",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "ISO-8601。"
+        },
+        {
+          "name": "normalizer_version",
+          "type": "TEXT",
+          "required": false,
+          "notes": "產生對應 work 的正規化規則版本。NULL = 尚未正規化。版本升級時據此找出需重放的紀錄。"
+        }
+      ]
+    },
+    {
+      "name": "download_job",
+      "kind": "table",
+      "purpose": "選擇性鏡像與批次下載佇列管理表。記錄從公網可獲取來源抓取實體檔案的狀態與重試。",
+      "fields": [
+        {
+          "name": "job_id",
+          "type": "TEXT PRIMARY KEY",
+          "required": true,
+          "notes": "'job_' + ULID。"
+        },
+        {
+          "name": "work_id",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "FK -> work.work_id。"
+        },
+        {
+          "name": "source_type",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["ipfs", "http_mirror", "torrent", "direct_oa"],
+          "notes": "下載傳輸協議類型。"
+        },
+        {
+          "name": "source_target",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "IPFS CID、URL 或 Magnet Link。"
+        },
+        {
+          "name": "status",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "enum": ["queued", "downloading", "verifying", "parsing", "completed", "failed"],
+          "notes": "下載與入庫狀態機。"
+        },
+        {
+          "name": "expected_checksum",
+          "type": "TEXT",
+          "required": false,
+          "notes": "MD5 或 SHA256 校驗碼，用於完成後比對。"
+        },
+        {
+          "name": "progress_percent",
+          "type": "INTEGER NOT NULL",
+          "required": true,
+          "notes": "0-100。"
+        },
+        {
+          "name": "error_message",
+          "type": "TEXT",
+          "required": false,
+          "notes": "失敗時的錯誤資訊。"
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "ISO-8601。"
+        },
+        {
+          "name": "updated_at",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "notes": "ISO-8601。"
+        }
+      ]
+    }
+  ]
+}
