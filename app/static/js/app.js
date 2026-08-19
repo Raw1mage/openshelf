@@ -1001,9 +1001,68 @@ function initQueueModalDragAndResize() {
   }
 }
 
+// === Chrome 擴充套件橋樑 (Chrome Extension Bridge) ===
+let isChromeExtensionAvailable = false;
+const extensionCallbacks = new Map();
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || data.source !== "CMS_EXTENSION") return;
+
+  if (data.action === "READY" || data.action === "PING_RESPONSE") {
+    isChromeExtensionAvailable = true;
+    console.log("[CMS Extension] 原生 Chrome 書籤擴充套件已連線 (v" + (data.version || "1.0.0") + ")");
+    updateExtensionStatusIndicator();
+  }
+
+  if (data.requestId && extensionCallbacks.has(data.requestId)) {
+    const resolve = extensionCallbacks.get(data.requestId);
+    extensionCallbacks.delete(data.requestId);
+    resolve(data.response);
+  }
+});
+
+function callExtension(action, payload = {}) {
+  return new Promise((resolve) => {
+    if (!isChromeExtensionAvailable && action !== "PING") {
+      resolve({ success: false, error: "Extension not available" });
+      return;
+    }
+    const requestId = "req_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
+    extensionCallbacks.set(requestId, resolve);
+    window.postMessage({
+      source: "CMS_WEB_APP",
+      action: action,
+      requestId: requestId,
+      payload: payload
+    }, "*");
+
+    setTimeout(() => {
+      if (extensionCallbacks.has(requestId)) {
+        extensionCallbacks.delete(requestId);
+        resolve({ success: false, error: "Timeout" });
+      }
+    }, 3000);
+  });
+}
+
+function updateExtensionStatusIndicator() {
+  const badge = document.getElementById("extStatusBadge");
+  if (badge) {
+    badge.innerHTML = `<span style="color: #34d399; font-weight: 600;">🟢 Chrome 原生書籤已連線同步</span>`;
+  }
+}
+
+// 頁面載入時自動探測擴充套件
+setTimeout(() => {
+  callExtension("PING");
+}, 150);
+
 // === 個人書單 (Personal Collections) ===
 let currentActiveCollectionId = null;
 let quickTargetWorkId = null;
+let quickTargetWorkTitle = null;
 
 async function openCollectionsModal(targetColId = null) {
   const modal = document.getElementById("collectionsModal");
@@ -1016,11 +1075,50 @@ function closeCollectionsModal() {
 }
 
 async function loadCollectionsList(selectColId = null) {
+  const sidebar = document.getElementById("collectionsSidebar");
+
+  // 若已安裝 Chrome 擴充套件，優先走 Chrome 原生書籤樹
+  if (isChromeExtensionAvailable) {
+    try {
+      const extRes = await callExtension("GET_TREE");
+      if (extRes.success && extRes.data) {
+        const rootTree = extRes.data;
+        const folders = (rootTree.children || []).filter(node => !node.url);
+
+        if (folders.length === 0) {
+          sidebar.innerHTML = `<p style="color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem;">Chrome「CMS圖書館」書籤資料夾為空</p>`;
+          return;
+        }
+
+        const activeId = selectColId || currentActiveCollectionId || folders[0].id;
+        currentActiveCollectionId = activeId;
+
+        sidebar.innerHTML = folders.map(f => {
+          const count = (f.children || []).length;
+          return `
+            <div class="collection-sidebar-item ${f.id === activeId ? 'active' : ''}" onclick="selectCollection('${f.id}')">
+              <span style="display: flex; align-items: center; gap: 0.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                <span>📁</span>
+                <span>${escapeHtml(f.title)}</span>
+              </span>
+              <span class="collection-count-badge">${count}</span>
+            </div>
+          `;
+        }).join("");
+
+        renderChromeFolderDetail(folders.find(f => f.id === activeId) || folders[0]);
+        return;
+      }
+    } catch (e) {
+      console.warn("讀取 Chrome 書籤樹失敗，切換為後端/本地模式:", e);
+    }
+  }
+
+  // 預設後端/本地資料庫模式
   try {
     const res = await fetch(`${BASE_PATH}/api/collections`);
     if (!res.ok) return;
     const collections = await res.json();
-    const sidebar = document.getElementById("collectionsSidebar");
     
     if (collections.length === 0) {
       sidebar.innerHTML = `<p style="color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem;">尚未建立自訂書單</p>`;
@@ -1049,6 +1147,52 @@ async function loadCollectionsList(selectColId = null) {
   } catch (err) {
     console.error("載入書單失敗:", err);
   }
+}
+
+function renderChromeFolderDetail(folderNode) {
+  const mainView = document.getElementById("collectionMainView");
+  if (!folderNode) return;
+  const items = folderNode.children || [];
+
+  mainView.innerHTML = `
+    <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 1rem;">
+      <div>
+        <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem;">
+          <span>📁</span>
+          <span>${escapeHtml(folderNode.title)}</span>
+        </h3>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Chrome 原生書籤資料夾 • 共 ${items.length} 筆書籤</p>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+      ${items.length === 0 ? `
+        <div style="text-align: center; color: var(--text-muted); padding: 3rem;">
+          <p>此 Chrome 資料夾目前為空</p>
+          <p style="font-size: 0.85rem; margin-top: 0.5rem;">在搜尋或逛書架時，點擊書籍卡片上的 ⭐ 即可加入</p>
+        </div>
+      ` : items.map(it => `
+        <div class="book-card" style="margin-bottom: 0; align-items: center;">
+          <div class="book-main">
+            <div class="book-title">${escapeHtml(it.title)}</div>
+            <div class="book-meta">
+              <span class="tag tag-local">🌐 Chrome 原生書籤</span>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(it.url)}</span>
+            </div>
+          </div>
+          <div class="book-actions">
+            <a class="btn btn-primary" href="${it.url}" target="_blank" title="立即閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; text-decoration: none;">📖</a>
+            <button class="btn btn-outline" onclick="removeChromeBookmark('${it.id}')" title="刪除書籤" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; color: #ef4444;">❌</button>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function removeChromeBookmark(bookmarkId) {
+  await callExtension("REMOVE_BOOKMARK", { bookmarkId });
+  await loadCollectionsList(currentActiveCollectionId);
 }
 
 async function selectCollection(collectionId) {
@@ -1177,11 +1321,41 @@ async function removeBookFromCollection(colId, workId) {
 // === 快速加入書單 Popover ===
 async function openQuickCollection(workId, title) {
   quickTargetWorkId = workId;
+  quickTargetWorkTitle = title;
   const modal = document.getElementById("quickCollectionModal");
   modal.classList.add("active");
   const listEl = document.getElementById("quickCollectionList");
   listEl.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 1rem;">載入書單中...</p>`;
 
+  // 1. 若 Chrome 擴充套件已連線，讀取 Chrome 資料夾
+  if (isChromeExtensionAvailable) {
+    try {
+      const extRes = await callExtension("GET_TREE");
+      if (extRes.success && extRes.data) {
+        const rootTree = extRes.data;
+        const folders = (rootTree.children || []).filter(node => !node.url);
+        const workUrl = `${window.location.origin}${BASE_PATH}/reader?work_id=${workId}`;
+
+        listEl.innerHTML = folders.map(f => {
+          const isChecked = (f.children || []).some(b => b.url && b.url.includes(workId));
+          return `
+            <label class="quick-col-row">
+              <span style="display: flex; align-items: center; gap: 0.5rem;">
+                <span>📁</span>
+                <span style="font-weight: 600;">${escapeHtml(f.title)}</span>
+              </span>
+              <input type="checkbox" class="quick-col-checkbox" data-folder-id="${f.id}" data-folder-name="${escapeHtml(f.title)}" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+            </label>
+          `;
+        }).join("");
+        return;
+      }
+    } catch (e) {
+      console.warn("讀取 Chrome 資料夾失敗，切換後端模式:", e);
+    }
+  }
+
+  // 2. 預設後端/本地資料庫模式
   try {
     const [colsRes, statusRes] = await Promise.all([
       fetch(`${BASE_PATH}/api/collections`),
@@ -1212,26 +1386,47 @@ async function openQuickCollection(workId, title) {
 async function saveQuickCollections() {
   if (!quickTargetWorkId) return;
   const checkboxes = document.querySelectorAll(".quick-col-checkbox");
-  const promises = [];
 
-  for (const cb of checkboxes) {
-    const colId = cb.dataset.colId;
-    if (cb.checked) {
-      promises.push(fetch(`${BASE_PATH}/api/collections/${colId}/items`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ work_id: quickTargetWorkId })
-      }));
-    } else {
-      promises.push(fetch(`${BASE_PATH}/api/collections/${colId}/items/${quickTargetWorkId}`, {
-        method: "DELETE"
-      }));
+  if (isChromeExtensionAvailable) {
+    const workUrl = `${window.location.origin}${BASE_PATH}/reader?work_id=${quickTargetWorkId}`;
+    for (const cb of checkboxes) {
+      const folderId = cb.dataset.folderId;
+      const folderName = cb.dataset.folderName;
+      if (cb.checked) {
+        await callExtension("ADD_BOOKMARK", {
+          title: quickTargetWorkTitle || "書籍",
+          url: workUrl,
+          folderId: folderId,
+          folderName: folderName
+        });
+      } else {
+        await callExtension("REMOVE_BOOKMARK", {
+          url: workUrl
+        });
+      }
     }
+  } else {
+    const promises = [];
+    for (const cb of checkboxes) {
+      const colId = cb.dataset.colId;
+      if (cb.checked) {
+        promises.push(fetch(`${BASE_PATH}/api/collections/${colId}/items`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_id: quickTargetWorkId })
+        }));
+      } else {
+        promises.push(fetch(`${BASE_PATH}/api/collections/${colId}/items/${quickTargetWorkId}`, {
+          method: "DELETE"
+        }));
+      }
+    }
+    await Promise.all(promises);
   }
 
-  await Promise.all(promises);
   document.getElementById("quickCollectionModal").classList.remove("active");
   quickTargetWorkId = null;
+  quickTargetWorkTitle = null;
 }
 
 // === 逛線上書攤 (Online Bookstalls & Tree Browsing) ===

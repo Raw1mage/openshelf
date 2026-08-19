@@ -143,7 +143,12 @@
       <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
         <div style="display: flex; align-items: center; gap: 0.75rem;">
           <span style="font-size: 1.5rem;">📚</span>
-          <h2 style="font-size: 1.25rem;">個人書單收藏庫</h2>
+          <div>
+            <h2 style="font-size: 1.25rem;">個人書單收藏庫</h2>
+            <div id="extStatusBadge" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.15rem;">
+              <span>⚪ 本地模式 • <a href="static/extension.zip" download style="color: var(--accent); text-decoration: underline;" title="點擊下載 Chrome 原生書籤同步擴充套件">下載 Chrome 擴充套件啟用原生同步</a></span>
+            </div>
+          </div>
         </div>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
           <button class="btn btn-primary" id="newCollectionBtn" title="新建書單" style="padding: 0.35rem 0.75rem; font-size: 1.1rem;">➕</button>
