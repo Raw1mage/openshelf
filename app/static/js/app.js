@@ -1233,7 +1233,7 @@ async function refreshQueueModal() {
                 <button class="btn btn-outline" style="padding: 0.25rem 0.55rem; font-size: 0.95rem; line-height: 1; color: #ef4444; border-color: rgba(239,68,68,0.4);" onclick="deleteJob('${j.job_id}')" title="刪除">🗑️</button>
               ` : ""}
               ${j.status === "completed" && j.work_id ? `
-                <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.95rem; line-height: 1;" onclick="saveSingleBookToLocalDisk('${j.work_id}', '${escapeHtml(j.title)}', '${j.format || 'pdf'}')" title="下載保存至本機硬碟">📥</button>
+                <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.95rem; line-height: 1;" onclick="saveSingleBookToLocalDisk('${j.work_id}', '${escapeJsArg(j.title)}', '${j.format || 'pdf'}')" title="下載保存至本機硬碟">📥</button>
                 <button class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.95rem; line-height: 1;" onclick="openReader('${j.work_id}')" title="線上閱讀">📖</button>
               ` : ""}
             </div>
@@ -1650,7 +1650,7 @@ function renderLibgenMirrorsList(mirrors) {
     if (m.validation_status === "verified") {
       statusBadge = `<span class="tag" style="background: rgba(16, 185, 129, 0.18); color: #34d399; font-size: 0.72rem;">🟢 通過驗證</span>`;
     } else if (m.validation_status === "incompatible_layout") {
-      const brLink = m.br_id ? `<span title="點擊查看 BR 報告" style="cursor: pointer; text-decoration: underline;" onclick="showBrDetailModal('${m.br_id}', '${escapeHtml(m.last_error || '')}')">[${m.br_id}]</span>` : "";
+      const brLink = m.br_id ? `<span title="點擊查看 BR 報告" style="cursor: pointer; text-decoration: underline;" onclick="showBrDetailModal('${m.br_id}', '${escapeJsArg(m.last_error || '')}')">[${m.br_id}]</span>` : "";
       statusBadge = `<span class="tag" style="background: rgba(239, 68, 68, 0.18); color: #f87171; font-size: 0.72rem;" title="${escapeHtml(m.last_error || '結構無法解析')}">⚠️ 結構不相容 ${brLink}</span>`;
     } else if (m.validation_status === "offline") {
       statusBadge = `<span class="tag" style="background: rgba(100, 116, 139, 0.2); color: var(--text-muted); font-size: 0.72rem;" title="${escapeHtml(m.last_error || '連線逾時')}">🔴 連線失敗</span>`;
@@ -2900,7 +2900,7 @@ function renderTreeNode(node, parentPath = "") {
     <div class="tree-node" id="node_${node.category_id}">
       <div class="tree-header ${node.category_id === currentActiveCategoryId ? 'active' : ''}" 
            title="點擊查看「${escapeHtml(node.name)}」架位藏書"
-           onclick="handleCategoryClick('${node.category_id}', '${escapeHtml(node.name)}', '${node.icon}', '${escapeHtml(currentPath)}')">
+           onclick="handleCategoryClick('${node.category_id}', '${escapeJsArg(node.name)}', '${node.icon}', '${escapeJsArg(currentPath)}')">
         <div style="display: flex; align-items: center; gap: 0.35rem; overflow: hidden;">
           ${hasChildren ? `<span class="tree-expander expanded" title="展開/折疊分類" onclick="event.stopPropagation(); toggleTreeNode('${node.category_id}')">▶</span>` : `<span style="width: 1.2rem;"></span>`}
           <span>${node.icon || '📖'}</span>
