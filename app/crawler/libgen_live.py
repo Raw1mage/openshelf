@@ -326,6 +326,7 @@ class LibgenCrawler:
             return items
 
         rows = table.find_all("tr")[1:]
+        dropped_no_md5 = 0
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 9:
@@ -358,7 +359,15 @@ class LibgenCrawler:
                     if md5_match and not md5_val:
                         md5_val = md5_match.group(1).lower()
 
-            if not md5_val and not clean_title:
+            if not md5_val:
+                # 使用者裁示（2026-08-21）：「下載不到的書就不要顯示搜尋結果」。
+                # md5 是本站唯一的下載主鍵（mirror_resolver.resolve_download_url
+                # 在無 md5 時直接回 None），缺它的 row 必然下載失敗；且 work_id 會
+                # 全部互撞成字面值 "libgen_"（BR-20260821_030000）。因此在來源端
+                # 丟棄，而不是讓它進 UI 之後才失敗。
+                # 丟棄必須留痕：否則「這批 row 沒有 md5」與「parser 壞掉回空 list」
+                # 與「搜尋本來就沒結果」在外部共用同一個輸出。
+                dropped_no_md5 += 1
                 continue
 
             format_type = "epub" if extension == "epub" else "pdf_born_digital"
@@ -387,6 +396,11 @@ class LibgenCrawler:
                 "source": "libgen"
             })
 
+        if dropped_no_md5:
+            log.debug(
+                "libgen_li adapter dropped %d row(s) with no md5 (unresolvable download); kept %d",
+                dropped_no_md5, len(items),
+            )
         return items
 
     def _parse_libgen_is_html(self, html_content: str, base_url: str) -> List[Dict[str, Any]]:
@@ -406,6 +420,7 @@ class LibgenCrawler:
             return items
 
         rows = target_table.find_all("tr")[1:]
+        dropped_no_md5 = 0
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 10:
@@ -434,7 +449,11 @@ class LibgenCrawler:
                     if md5_match and not md5_val:
                         md5_val = md5_match.group(1).lower()
 
-            if not md5_val and not title:
+            if not md5_val:
+                # 同 _parse_libgen_li_html：無 md5 即無下載路徑，於來源端丟棄。
+                # 本適配器目前無實測樣本（三個 is 鏡像被 dao 的 validation_status
+                # 濾掉），故丟棄計數同樣入 log 以便日後觀察。
+                dropped_no_md5 += 1
                 continue
 
             format_type = "epub" if extension == "epub" else "pdf_born_digital"
@@ -463,4 +482,9 @@ class LibgenCrawler:
                 "source": "libgen"
             })
 
+        if dropped_no_md5:
+            log.debug(
+                "libgen_is adapter dropped %d row(s) with no md5 (unresolvable download); kept %d",
+                dropped_no_md5, len(items),
+            )
         return items
