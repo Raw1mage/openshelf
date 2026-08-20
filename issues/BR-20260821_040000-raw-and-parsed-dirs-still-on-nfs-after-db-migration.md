@@ -251,6 +251,64 @@ dispatcher 已裁示執行順序：先量真實負載下的尖峰形狀 → 量�
 本案的 `raw_dir` 那一半即隨之解決；`parsed_dir` 那一半不受影響（它走 `ingest`，
 是否在 event loop 執行緒上未查——見下）。
 
+### ⬆ 2026-08-21 追加：`dec5b44` 順帶搬走的第三樣，與它留下的孤兒檔
+
+**本節推翻了本 BR（與 BR-210000 E 節）的一個共同前提。** 來源：handler
+`ses_fdf38a329ffehvLOfKjb3cCBwm` 的 `[BRNS-ASK] round=1` 第①格；dispatcher 獨立重驗後採納。
+
+#### 前提錯在哪
+
+BR-210000 E 節把 `_save_jobs_to_disk()` 的 9 個呼叫點列進「同步阻塞 IO **落在 NFS**」這一族，
+dispatcher 的派工單也照抄了這個分類。**兩者都錯了，而且不是「列多了」，是列錯了類。**
+
+```
+download_worker.py:104   self._jobs_file = self.pipeline.storage.db_dir / "download_jobs.json"
+                                                                ^^^^^^
+manager.py:16            self.db_dir = self.base_dir / "db"
+CONTROL  grep -n '_zzz_jobs_file_zzz'  rc=1          ← grep 有鑑別力
+
+df -T data/db      →  /dev/sde  ext4
+CONTROL df -T /nas →  nfs4                            ← 兩者確實不同
+```
+
+**`download_jobs.json` 走的是 `db_dir`，而 `dec5b44` 搬的正是 `db_dir`。**
+所以那次遷移**順帶把它一起搬離 NFS 了** —— 兩張 BR 都只追 `raw`/`parsed`，
+沒人注意到第三樣東西也掛在同一個目錄底下。
+
+⇒ 那 9 個呼叫點寫的是**本地 ext4 的小 JSON**（現役檔 2 bytes），與本族其餘各項
+**不是同一個機制**，不該被同一個處方治。
+
+#### 連帶：這 9 個呼叫點刻意不改（不是漏掉）
+
+handler 進一步指出，其中 `src:407-409`（`_run_single_job` finally）與
+`src:621-624`（`_process_queue` finally）位在 **CancelledError 傳播路徑上的 `finally`**。
+換成 `await` 會讓該 await 在取消情境下自己被取消 ⇒ **落盤被跳過**。
+
+而那個落盤保護的正是 `BR-20260820_230000` 修好的東西 —— `main.py:33` 的
+`finally: await worker.stop()`，其註解自陳「下載中的 job 沒機會落盤標記狀態（證據 ③）」。
+
+**拿 1-2ms 的本地 ext4 小寫去換「關機時任務狀態可能不落盤」是負收益。**
+9 個呼叫點一律不動，這是判斷過的決定，不是遺漏。
+
+#### 孤兒檔（本 BR 新增的殘留項）
+
+```
+現役  data/db/download_jobs.json            2 bytes   Aug 21 03:54  ← "[]"，活的
+殘留  /nas/openshelf/db/download_jobs.json  1118 bytes Aug 20 14:21  ← dec5b44 前的孤兒
+
+$ grep -rn 'openshelf/db\|/data/db/download_jobs\|nas.*download_jobs' app/ --include=*.py
+GREP_RC=1                                    ← 零命中：無任何程式碼會再讀它
+CONTROL $ grep -rn 'download_jobs.json' app/ --include=*.py
+crawler_routes.py:148 / download_worker.py:104 / :254   rc=0   ← 3 行，證明 grep 讀得到
+```
+
+**這份 1118 bytes 的舊檔停留在 `dec5b44` 之前的狀態，且已無讀者。**
+它本身無害（沒有人讀），但它是一個**看起來像現況的過期快照** —— 下一個 debug
+`download_jobs` 的人若先找到 NFS 那份，會對著一份 8/20 14:21 的狀態推論。
+
+處置：**未決**。刪除是安全的（無讀者已坐實），但那是 `dec5b44` 遷移的收尾債，
+不屬本 BR 的修法選項 A-D 任何一項。列在此處以免失傳。
+
 ## 沒驗證的
 
 1. **`parsed_dir` 的寫入是否也在 event loop 執行緒上** —— 未查。`routes.py:122`
