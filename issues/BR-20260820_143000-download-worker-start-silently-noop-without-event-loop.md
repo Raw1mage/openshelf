@@ -1,7 +1,9 @@
 # BR-20260820_143000 — DownloadWorker.start() 在無 event loop 時靜默 no-op，有 loop 時真的打公網
 
-Status: OPEN
+Status: **PARTIAL** — 主修復已落地並驗收（`d59dd8d`），但**判準 4 仍未關閉**（見下方殘留節）。
+        依本 repo 規約，帶 scoped remainder 的 BR 留頂層，不進 `closed/`。
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
+Fixed-by: `d59dd8d` — handler ses_fe18eab55ffeEQU8vBGV8DrmVd，值星官獨立驗收（2026-08-20）
 Family: download-worker-lifecycle
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Reported-by: handler ses_fe27556c4ffeWZLm2DnDItEhNf（修 BR-131500 時撿到，`issues/` 在其禁區故未自行建檔）
@@ -79,7 +81,8 @@ handler 只在測試 fixture 裡 `monkeypatch.setattr(worker, "start", lambda: N
    **回退行為不得改變**（載入失敗仍不阻斷啟動）。
 4. 需有一條測試證明「在 async context 下 enqueue **不會**真的發出對外網路請求」——
    或明確記錄這是 by-design 並提供 opt-out。此格若無解，至少要在 `enqueue()` docstring 寫明副作用。
-5. 完整 pytest 不得下降（當前基線 **150 passed**，`.venv/bin/python -m pytest`）。
+5. 完整 pytest 不得下降（~~當前基線 **150 passed**~~ — **實測為 155 passed**，
+   該舊值於 2026-08-20 被 handler 推翻、值星官獨立重跑坐實；`.venv/bin/python -m pytest`）。
 
 ## 下一個 session 的 checklist
 
@@ -137,3 +140,75 @@ LOOP  : return=None worker_task_type=Task created=True logs='Using selector: Epo
 **仍未量的**：
 - 未重現 GROUP C 的 rc=124 hang（未執行會打公網的測試）。那組數據仍是原始回報的轉述。
 - `download_worker.py:92-93` `_save_jobs_to_disk` 尾端另有同型 `except Exception: pass`（本 BR 原未記）。
+
+---
+
+## 殘留節（PARTIAL 的理由，2026-08-20 值星官驗收後寫入）
+
+### 已關閉的（`d59dd8d`，值星官獨立驗收）
+
+判準 1、2、3、5 全數達成：
+
+- **判準 1**（兩態可區分）— `start()` `:146-164`，`try` 縮到只包 `asyncio.get_running_loop()`，
+  `except RuntimeError` 改 `log.warning` + `return`。訊息明寫後果與例外型別。
+- **判準 2**（兩個方向的測試）— `tests/test_download_worker_start_lifecycle.py`，8 條，
+  每個「必須出聲」都配一條「必須靜默」的控制組。
+- **判準 3**（`_load_jobs_from_disk` 的靜默 except）— 已改，回退行為一字未改。
+  **順帶處理了本 BR 原未記的第三個實例** `:95-101` `_save_jobs_to_disk`。
+- **判準 5**（pytest 不下降）— 155 → 163，零下降。
+
+**值星官獨立驗收數據**（未採信 handler 自報）：
+
+```
+基線 --ignore 新測試檔        155 passed  rc=0
+  CONTROL --ignore 指向不存在的檔  163 passed   ← 證明 --ignore 真的在濾，非空轉
+完整                          163 passed  rc=0   （155 + 8）
+
+MUTATION 把 start() 改回 except RuntimeError: return
+  → 2 failed / 6 passed  rc=1
+    死的正是 test_start_without_event_loop_warns
+            test_enqueue_without_event_loop_warns
+  ⇒ 測試真的鎖得住，不是恆綠
+
+還原 diff rc=0；CONTROL diff 對 mutant 副本 rc=1   ← 證明 diff 有鑑別力
+MUTANT 標記已清 rc=1；CONTROL 同 grep 對副本 rc=0
+還原後完整                    163 passed  rc=0
+禁區 12 個路徑全空；CONTROL 同語法對已改檔非空
+```
+
+**handler 額外收窄的一格（本 BR 原未記）**：原寫法把 `loop.create_task(...)` 也包在同一個
+`try` 裡，所以 `create_task` 自己拋的 `RuntimeError`（例如 loop 已關閉）會被同一個 `except`
+一起吞掉。**這個 `except` 同時吃掉了第二種真失敗**，本 BR 只描述了「無 loop」那一態。
+現已收窄，該條會正常往上拋。
+
+### ⚠ 未關閉的 —— 判準 4（本 BR 留頂層的唯一理由）
+
+> **判準 4 原文**：需有一條測試證明「在 async context 下 enqueue **不會**真的發出對外網路
+> 請求」——或明確記錄這是 by-design 並提供 opt-out。
+
+**現況：只做了最低替代**，即在 `enqueue()` docstring 揭露副作用（`:175-186`）。
+**缺陷本身仍在**：`enqueue()` 尾端無條件呼叫 `self.start()`，在有 running loop 的環境
+（含 `TestClient`）下會立刻 `create_task(_process_queue())` 並開始對公網鏡像發出真實 HTTP
+請求。目前**沒有 opt-out 參數**。
+
+**為何本包沒做**：關閉這格需要動 `enqueue()` 的語意或新增 opt-out 參數（例如
+`autostart: bool = True`），那是**產品決策不是實作細節**——派工單已明列為範圍外，
+handler 依指示未自行決定。
+
+**下一包的選項（需使用者拍板）**：
+
+| | 做法 | 代價 |
+|---|---|---|
+| A | `enqueue(..., autostart: bool = True)`，測試傳 `False` | 公開 API 增加一個參數；既有呼叫端不受影響 |
+| B | 把 `start()` 從 `enqueue()` 尾端移除，改由呼叫端顯式啟動 | 破壞既有語意，三個呼叫端都要改（`main.py:27`、`:169`、`:188`） |
+| C | 維持現狀，只靠 docstring 揭露 | 缺陷留著；任何在 async context 下呼叫 `enqueue` 的測試仍會踩到，且症狀是 timeout 不是 error |
+
+**現行繞過措施仍是必要的、不得移除**：`tests/test_download_path_year.py:214`
+`monkeypatch.setattr(worker, "start", lambda: None)`。它擋的是「有 loop 時真的去下載」
+這條路徑——本修復完全沒碰它（本修復只讓「無 loop 時」出聲），**所以它沒有變成多餘**。
+
+### 歸檔條件
+
+判準 4 以 A / B / C 任一方式關閉後，本 BR 方可 `git mv` 進 `issues/closed/`。
+在那之前維持 **PARTIAL** 留頂層——**修好一半就歸檔，會讓「已驗證的部分」與
+「未涵蓋的部分」共用同一個狀態**，而那正是本 BR 記載的失效類別本身。
