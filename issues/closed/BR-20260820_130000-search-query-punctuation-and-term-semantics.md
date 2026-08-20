@@ -1,6 +1,7 @@
 # BR-20260820_130000 — 查詢字串含標點或含未索引詞就回 0 筆
 
-Status: OPEN
+Status: CLOSED
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4 (fix b00d591)
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: search-query-semantics
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4

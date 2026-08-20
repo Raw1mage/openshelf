@@ -1,10 +1,14 @@
 # BR-20260820_124500 — 「加入自訂書單」選單需等十幾秒才顯示內容
 
-Status: OPEN
+Status: PARTIAL
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: frontend-blocking-io
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Reported-by: 使用者（附截圖，選單顯示「載入中...」）
+Partial-since: 2026-08-20（前端阻斷級缺陷已修並 commit `76efe94`；後端延遲殘留，見文末「勘誤與殘留」）
+
+> ⚠️ **本 BR 的原始假說已被實測推翻，全文以下的 D1/D2/D4 分析僅保留作錯誤紀錄。**
+> 真正的根因與殘留項在文末「勘誤與殘留」一節。**接手者請先讀那一節。**
 
 **Related**:
 - `BR-20260820_111523-mirror-resolver-dead-mirrors` — **同一種失效類別「缺席態與失敗態共用同一個輸出」**，
@@ -143,3 +147,138 @@ extension 分支卻是逐一 await。以現有 4 個書單計算：**4 × 3000ms
 同病灶（阻塞式等待 + 空 catch），並行會撞車。
 建議在 `ses_fe2894298ffeUsqILfc6fgFmlj` 交件驗收後，由同一顆 handler 續作，
 它屆時已有該檔的完整脈絡。
+
+---
+
+# 勘誤與殘留（2026-08-20 收攏，值星官 ses_fe7b5cbadffeSlxj0dv1Z740O4）
+
+## 一、本 BR 的原始假說錯了，D1/D2/D4 全部不成立
+
+我原本寫「`callExtension()` 每次失敗要靜默耗掉 3000ms，旗標永不回退，於是每次呼叫都固定付 3 秒」。
+handler `ses_fe2894298ffeUsqILfc6fgFmlj` 用 stub content script 做了決定性矩陣，**推翻它**：
+
+| extension 狀態 | `isChromeExtensionAvailable` | 選單浮現 | 列數 |
+|---|---|---|---|
+| `none`（完全沒有） | false | 24,555 ms | 4（後端書單） |
+| `silent`（回 PING、其餘不回 → **每次真的等滿 3000ms**） | true | 25,107 ms | 4 |
+| `responsive`（全部即時回應） | true | **179 ms** | 2（Chrome 資料夾） |
+
+`silent` 與 `none` 只差 **552ms**，不是十幾秒。**timeout 從來就不是主因。**
+
+根因是 `app.js` 的 `callExtension` 開頭就有守衛：
+
+```js
+if (!isChromeExtensionAvailable && action !== "PING") {
+  resolve({ success: false, error: "Extension not available" });
+  return;                       // ← 立即返回，3000ms setTimeout 根本沒被排上
+}
+```
+
+extension 不在時 `callExtension` **從不等待**。我寫 BR 時只讀了 `setTimeout` 那段，
+沒讀函式開頭的守衛就下了結論——**靜態閱讀下的推論，未經實測就寫成「證據」**。
+本 BR 自己在「沒驗證的」一節寫過「未進瀏覽器實測，這是本 BR 最大的未驗證面」，
+那句話是對的，而我仍然把推論寫進了標題與「一句話」。
+
+`responsive` 那格之所以 179ms，是因為它在 extension 分支提前 `return`，
+**後端路徑從未執行**——這反過來成為「慢的是後端」的旁證。
+
+## 二、handler 找到的真缺陷：選單根本打不開（阻斷級）
+
+**已修，commit `76efe94`。**
+
+`app.js:718` 等 7 處把使用者資料塞進 inline onclick 的 JS 字串字面值，
+而 `escapeHtml()` 只轉 `& < > "`，**不轉單引號**：
+
+```js
+onclick="openQuickCollection('${item.work_id}', '${escapeHtml(item.title)}')"
+```
+
+書庫第一本書叫 `Silberschatz's Operating System Concepts`（實測 ASCII U+0027，
+不是排版撇號 U+2019），撇號直接截斷字串字面值 →
+`SyntaxError: missing ) after argument list` → **按鈕點了完全沒反應**。
+
+實測不是邊角：公網 25 筆有 2 筆帶撇號（`Beginner's` ×2），本地 2 筆有 1 筆。
+
+修法是新增 `escapeJsArg()`，**先做 JS 字面值跳脫、再做 HTML 屬性跳脫**——
+順序不可顛倒，因為 HTML 屬性會先被解碼再交給 JS parser，所以把 `'` 轉成 `&#39;` 沒用。
+
+值星官獨立重放（node，模擬 HTML 屬性解碼後餵給 JS parser）：
+
+```
+OLD (escapeHtml)  → PARSE_FAIL: missing ) after argument list
+NEW (escapeJsArg) → PARSE_OK，且 roundtrip 值與原標題逐字元相等（ROUNDTRIP_EXACT: true）
+```
+
+**這解釋了使用者截圖裡的「載入中...」為何不會前進**——它不是慢，是那次點擊
+根本沒有觸發任何載入；畫面上的是上一次殘留或初始態。
+
+## 三、真正的殘留：那 20-27 秒在後端，本 BR 未修
+
+handler 用四輪量測定案，值星官複核其證據鏈：
+
+```
+PerformanceResourceTiming   QUEUED 1ms / TTFB 26,665ms / download 1ms   ← 排除連線排隊
+A/B 儀器對照（不註冊 page.on）  12,006 / 20,049 / 27,593 ms              ← 排除 Playwright 儀器
+同刻 browser vs host curl    7,734ms vs 7,878ms                        ← 一致，定案在後端
+```
+
+**與 `/api/search` 偶發 4.5s 形狀相同**（同一支 API 忽快忽慢、host 與 browser 同步慢），
+很可能同一根因。
+
+### `--reload` 假說：實測未能重現，不是結論
+
+handler 列了線索：`docker compose logs` 顯示 handler C 工作期間有 7 次 `WatchFiles ... Reloading`，
+時間吻合但未證明因果。值星官做了決定性實驗（`touch app/db/search.py` 強制觸發 reload，
+前後各取樣）：
+
+```
+reload 前 5 次   0.267 / 0.315 / 0.242 / 0.251 / 0.247 s
+reload 後 10 次  0.255 / 0.250 / 1.999 / 0.241 / 0.222 / 0.252 / 0.243 / 0.276 / 0.220 / 0.232 s
+CONTROL          docker compose logs 確認 "WatchFiles detected changes in 'app/db/search.py'. Reloading..." 命中 1
+```
+
+reload 確實製造了一次 **2.0s** 的尖峰（post3），但**沒有重現 20-27s**。
+
+**這是 UNDECIDABLE，不是排除**：reload 尖峰的數量級（2s）比觀察到的（20-27s）小一個數量級，
+但我的取樣是在單一 host、無並發負載、無 crawler 在跑的條件下做的。
+handler 觀察到 20-27s 的當下有瀏覽器、輪詢、可能還有公網爬蟲在跑。
+**「我沒重現出來」不等於「它不是成因」。**
+
+### 後續應查的方向（未做）
+
+1. 在**有負載**的條件下重做上述實驗（同時跑 `/api/crawler/search` 再打 `/api/collections`）。
+2. 查 SQLite 連線是否為單一共用且無 pool——若是，任何長查詢都會排隊在同一把鎖後面，
+   而 `crawler/jobs` 輪詢之所以不受影響可能只是因為它讀的是別的東西。
+3. 這格若查實，`BR-20260820_124500` 與 `/api/search` 偶發 4.5s 應合併成一張後端 BR。
+
+## 四、handler 順帶修的（在授權邊界內，且正是本 BR 的原始目標）
+
+等待/空/失敗三態現在可區分（原本三者共用同一行靜態「載入書單中...」）：
+
+| case | `data-quick-state` | 畫面 |
+|---|---|---|
+| A `/api/collections` 永不 resolve | `loading` | `載入書單中… 已等待 N 秒`（每秒遞增） |
+| B 回 `[]` | `empty` | `📖 尚未建立任何個人書單` |
+| C 回 500 | `error` | `⚠️ 載入書單失敗 書單清單 HTTP 500` |
+
+`ALL_THREE_DISTINCT: True`。另加 `!res.ok → throw`（原本 500 會走到 `res.json()`
+才炸成 `Unexpected token`）與 `quickCollectionReqId` 競態守衛。
+
+## 五、範圍外、已具備修法、建議另開一包
+
+同樣的撇號漏洞仍存在於三處**不在書單路徑上**的呼叫點（值星官獨立 grep 確認）：
+
+```
+app.js:1236  saveSingleBookToLocalDisk('${j.work_id}', '${escapeHtml(j.title)}', ...)
+app.js:1653  showBrDetailModal('${m.br_id}', '${escapeHtml(m.last_error || '')}')
+app.js:2903  handleCategoryClick('${node.category_id}', '${escapeHtml(node.name)}', ...)
+```
+
+另外 4 個已改為 `escapeJsArg` 但**未實測**的呼叫點（需既有書單資料才觸發得到）：
+`removeChromeBookmark` / `renameCollectionPrompt` / `deleteCollectionPrompt` /
+`removeBookFromCollection`。改法與已驗證的 `openQuickCollection` 完全相同。
+
+## 六、為何本 BR 是 PARTIAL 而非 CLOSED
+
+前端阻斷級缺陷已修並已 commit（`76efe94`），**但使用者原始回報的「十幾秒」尚未消除**——
+它在後端，而後端不在本包授權內。依規約，帶明確殘留的 BR 留在頂層不進 `closed/`。
