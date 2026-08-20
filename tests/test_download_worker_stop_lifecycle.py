@@ -334,3 +334,104 @@ def test_lifespan_stops_worker_on_shutdown(monkeypatch):
             f"離開 lifespan 必須呼叫 worker.stop()，實得 {calls}"
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# 方向 4 — 迴圈守衛 `while not self._stopping`（round 2 補鎖）
+# ---------------------------------------------------------------------------
+#
+# 為什麼上面 9 條鎖不住守衛：`stop()` 送出的取消在 re-raise 在場時會**穿透整個**
+# `_process_queue`，task 當場結束——迴圈頂端的條件根本沒有機會被求值。實測（round 1
+# 驗收）：單獨把守衛換成 `while True:` 而保留兩處 re-raise，9 條全過 rc=0，零鑑別力。
+#
+# 守衛唯一會被求值的路徑是「迴圈回到頂端」，而在 `_stopping` 已為真時能回到頂端的，
+# 只有 `if job.status == "paused" ...: task_done(); continue` 這條跳過分支。
+# 下面兩條就建構那條路徑：佇列裡放**會被跳過的** job，觀察迴圈在旗標已立時
+# 還會不會繼續取用工作。
+#
+# 這是白箱測試（直接設 `_stopping`），刻意如此：守衛的契約就是對這個內部旗標負責，
+# 而經由 `stop()` 抵達同一狀態的是一個 race window，用它當測試會不穩定——
+# 不穩定的測試與「守衛壞了」共用同一個輸出。
+
+
+def _skippable_job(worker, md5: str, title: str):
+    """做一個「迴圈會跳過」的 job：入列後標 paused。
+
+    `_process_queue` 對這種 job 走 `task_done(); continue`——不執行下載、
+    直接回到迴圈頂端，也就是守衛唯一被求值的地方。
+    """
+    job = worker.enqueue(md5=md5, title=title, autostart=False)
+    job.status = "paused"
+    return job
+
+
+def test_loop_guard_refuses_new_work_once_stopping(worker, monkeypatch):
+    """旗標已立時，迴圈不得再從佇列取用任何工作。
+
+    守衛被移除時：迴圈把三個 job 全部跳完，回到 `await queue.get()` 永遠掛住，
+    task 不會結束——以斷言呈現，不是 rc=124。
+    """
+    blocker = _BlockingDownload()
+    monkeypatch.setattr(worker, "_execute_download_with_resume", blocker)
+
+    async def scenario():
+        for i, ch in enumerate("abc"):
+            _skippable_job(worker, ch * 32, f"關閉後不得取用 {i}")
+
+        assert worker.queue.qsize() == 3, \
+            "控制組：佇列裡必須真的有工作等著，否則本測試在空佇列下白白通過"
+
+        worker._stopping = True
+        task = asyncio.get_running_loop().create_task(worker._process_queue())
+
+        try:
+            await asyncio.wait_for(task, timeout=STOP_TIMEOUT)
+        except asyncio.TimeoutError:
+            pytest.fail(
+                f"旗標已立，但 `_process_queue` 在 {STOP_TIMEOUT}s 內沒有結束"
+                "——迴圈守衛 `while not self._stopping` 不在了，它把佇列清空後"
+                "停在 `await queue.get()` 等下一個永遠不會來的 job。"
+                "（失敗以斷言呈現而非 rc=124）"
+            )
+
+        assert task.done(), "迴圈必須在旗標已立時立刻結束"
+        assert worker.queue.qsize() == 3, \
+            f"關閉中的迴圈連跳過都不該做——佇列必須原封不動，實得 qsize={worker.queue.qsize()}"
+        assert blocker.calls == [], \
+            f"關閉中不得執行任何下載，實得 calls={blocker.calls}"
+
+    _run(scenario)
+
+
+def test_loop_does_drain_skippable_work_when_not_stopping(worker, monkeypatch):
+    """控制組——沒有這一條，上一條等於什麼都沒證明。
+
+    同樣三個會被跳過的 job，只差 `_stopping` 為假：迴圈**必須**真的去取用它們
+    並把佇列清空。這證明上一條的「佇列原封不動」是守衛擋下來的，
+    而不是這個 job 佈置本來就不會被碰、或迴圈根本沒跑起來。
+    """
+    blocker = _BlockingDownload()
+    monkeypatch.setattr(worker, "_execute_download_with_resume", blocker)
+
+    async def scenario():
+        for i, ch in enumerate("abc"):
+            _skippable_job(worker, ch * 32, f"正常應被取用 {i}")
+
+        assert worker.queue.qsize() == 3
+        assert worker._stopping is False, "控制組：這條路徑上旗標必須為假"
+
+        task = asyncio.get_running_loop().create_task(worker._process_queue())
+        try:
+            for _ in range(int(STOP_TIMEOUT * 100)):
+                if worker.queue.qsize() == 0:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert worker.queue.qsize() == 0, \
+                f"未關閉的迴圈必須真的取用佇列裡的工作，實得 qsize={worker.queue.qsize()}"
+            assert not task.done(), \
+                "取完之後迴圈必須還活著等下一個 job（它不該自己結束）"
+        finally:
+            task.cancel()
+
+    _run(scenario)
