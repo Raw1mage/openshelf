@@ -554,7 +554,7 @@ function updateSearchStatusLine(state) {
   const parts = [];
 
   if (state.local.status === "error") {
-    parts.push(`<span style="color: var(--danger, #f87171);">⚠️ 本地書庫檢索失敗（${escapeHtml(state.local.error || "未知錯誤")}）</span>`);
+    parts.push(`<span style="color: var(--danger, #f87171);">⚠️ 本地書庫檢索失敗（${escapeHtmlText(state.local.error || "未知錯誤")}）</span>`);
   } else if (state.local.status === "pending") {
     parts.push(`<span style="color: var(--text-muted);">💾 本地檢索中…</span>`);
   } else {
@@ -564,7 +564,7 @@ function updateSearchStatusLine(state) {
   if (state.remote.status === "pending") {
     parts.push(`<span data-remote-state="pending" style="color: var(--text-muted);">🌐 公網鏡像檢索中<span class="dot-ellipsis">…</span></span>`);
   } else if (state.remote.status === "error") {
-    parts.push(`<span data-remote-state="error" style="color: var(--danger, #f87171);">⚠️ 公網鏡像檢索失敗（${escapeHtml(state.remote.error || "未知錯誤")}）</span>`);
+    parts.push(`<span data-remote-state="error" style="color: var(--danger, #f87171);">⚠️ 公網鏡像檢索失敗（${escapeHtmlText(state.remote.error || "未知錯誤")}）</span>`);
   } else {
     parts.push(`<span data-remote-state="done">🌐 公網可收書 ${remoteCount} 本</span>`);
   }
@@ -728,12 +728,12 @@ function renderLocalBookCard(item) {
         </div>
       </div>
       <div class="book-main">
-        <div class="book-title">${escapeHtml(item.title)}</div>
+        <div class="book-title">${escapeHtmlText(item.title)}</div>
         <div class="book-meta">
           <span class="tag tag-local" title="本地已落地">💾</span>
           ${formatTag}
           ${langTag}
-          <span>✍️ ${escapeHtml(item.authors_display || "未知作者")}</span>
+          <span>✍️ ${escapeHtmlText(item.authors_display || "未知作者")}</span>
           <span>${yearText}</span>
           <span>💾 ${sizeMb}</span>
         </div>
@@ -891,15 +891,15 @@ function renderLiveBookCard(item) {
         </div>
       </div>
       <div class="book-main">
-        <div class="book-title">${escapeHtml(item.title)}</div>
+        <div class="book-title">${escapeHtmlText(item.title)}</div>
         <div class="book-meta">
           <span class="book-status-slot" style="display: contents;">${statusBadgeHtml}</span>
           ${formatTag}
           ${langTag}
-          <span>✍️ ${escapeHtml(item.authors_display || "未知作者")}</span>
+          <span>✍️ ${escapeHtmlText(item.authors_display || "未知作者")}</span>
           <span>${yearText}</span>
           <span>💾 ${sizeMb}</span>
-          ${item.publisher ? `<span>🏢 ${escapeHtml(item.publisher)}</span>` : ""}
+          ${item.publisher ? `<span>🏢 ${escapeHtmlText(item.publisher)}</span>` : ""}
           ${item.md5 ? `<span style="font-family:monospace; font-size:0.75rem; color:var(--text-muted);">MD5: ${item.md5.substring(0, 8)}...</span>` : ""}
         </div>
       </div>
@@ -1196,7 +1196,7 @@ async function refreshQueueModal() {
       } else if (j.status === "completed") {
         statusIconHtml = `<span class="queue-status-completed" style="font-size: 1.05rem;" title="已完成並落地本地">✅</span>`;
       } else if (j.status === "failed") {
-        statusIconHtml = `<span class="queue-status-failed" style="font-size: 1.05rem;" title="${escapeHtml(j.error_message || '下載失敗')}">❌</span>`;
+        statusIconHtml = `<span class="queue-status-failed" style="font-size: 1.05rem;" title="${escapeHtmlText(j.error_message || '下載失敗')}">❌</span>`;
       } else {
         // queued 狀態保持空白無多餘圖示
         statusIconHtml = "";
@@ -1207,7 +1207,7 @@ async function refreshQueueModal() {
       return `
         <div class="queue-item" style="padding: 0.85rem 1rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 0.25rem;">
-            <span style="max-width: 72%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(j.title)}">《${escapeHtml(j.title)}》</span>
+            <span style="max-width: 72%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtmlText(j.title)}">《${escapeHtmlText(j.title)}》</span>
             ${statusIconHtml}
           </div>
           <div style="font-size: 0.8rem; color: var(--text-secondary); display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
@@ -1282,8 +1282,8 @@ async function openDetail(workId) {
     `).join("");
 
     content.innerHTML = `
-      <h3 style="font-size:1.35rem; margin-bottom:0.75rem;">${escapeHtml(data.title)}</h3>
-      <p style="color:var(--text-secondary); margin-bottom:1rem;">作者: ${escapeHtml(data.authors_display || "未知")}</p>
+      <h3 style="font-size:1.35rem; margin-bottom:0.75rem;">${escapeHtmlText(data.title)}</h3>
+      <p style="color:var(--text-secondary); margin-bottom:1rem;">作者: ${escapeHtmlText(data.authors_display || "未知")}</p>
       
       <div style="background:var(--bg-primary); padding:1rem; border-radius:8px; margin-bottom:1rem;">
         <h4 style="font-size:0.95rem; margin-bottom:0.5rem; color:var(--text-primary);">識別碼 (Identifiers)</h4>
@@ -1309,13 +1309,13 @@ function previewLiveDetail(md5) {
   modal.classList.add("active");
 
   const mirrorsHtml = (item.mirror_links || []).map(link => `
-    <li style="margin-bottom: 0.35rem;"><a href="${link}" target="_blank" style="color: var(--accent);">${escapeHtml(link)}</a></li>
+    <li style="margin-bottom: 0.35rem;"><a href="${link}" target="_blank" style="color: var(--accent);">${escapeHtmlText(link)}</a></li>
   `).join("");
 
   content.innerHTML = `
-    <h3 style="font-size:1.35rem; margin-bottom:0.75rem;">${escapeHtml(item.title)}</h3>
-    <p style="color:var(--text-secondary); margin-bottom:0.5rem;">作者: ${escapeHtml(item.authors_display || "未知")}</p>
-    <p style="color:var(--text-secondary); margin-bottom:1rem;">出版社: ${escapeHtml(item.publisher || "未知")} (${item.publication_year || "未知年份"})</p>
+    <h3 style="font-size:1.35rem; margin-bottom:0.75rem;">${escapeHtmlText(item.title)}</h3>
+    <p style="color:var(--text-secondary); margin-bottom:0.5rem;">作者: ${escapeHtmlText(item.authors_display || "未知")}</p>
+    <p style="color:var(--text-secondary); margin-bottom:1rem;">出版社: ${escapeHtmlText(item.publisher || "未知")} (${item.publication_year || "未知年份"})</p>
     
     <div style="background:var(--bg-primary); padding:1rem; border-radius:8px; margin-bottom:1rem;">
       <h4 style="font-size:0.95rem; margin-bottom:0.5rem; color:var(--text-primary);">MD5 指紋</h4>
@@ -1339,7 +1339,7 @@ async function viewPureText(workId) {
   const content = document.getElementById("detailModalContent");
   content.innerHTML = `
     <h4 style="margin-bottom:0.75rem;">抽取的純文字 Markdown</h4>
-    <pre style="background:var(--bg-primary); padding:1rem; border-radius:8px; max-height:400px; overflow:auto; font-size:0.85rem; white-space:pre-wrap;">${escapeHtml(text || "（尚無純文字）")}</pre>
+    <pre style="background:var(--bg-primary); padding:1rem; border-radius:8px; max-height:400px; overflow:auto; font-size:0.85rem; white-space:pre-wrap;">${escapeHtmlText(text || "（尚無純文字）")}</pre>
   `;
 }
 
@@ -1392,13 +1392,26 @@ function openReader(workId) {
   window.open(`${BASE_PATH}/reader?work_id=${workId}`, "_blank");
 }
 
-function escapeHtml(str) {
+// 只轉 & < > " —— 刻意「不轉」單引號 '。
+//
+// 適用：
+//   1. HTML 文字節點           <span>${escapeHtmlText(t)}</span>
+//   2. 雙引號屬性值            title="${escapeHtmlText(t)}"
+//
+// 不適用（會被截斷 / 產生 SyntaxError）：
+//   1. 單引號屬性值            title='${escapeHtmlText(t)}'        ← ' 未跳脫
+//   2. inline onclick 內的 JS 字串參數
+//                              onclick="fn('${escapeHtmlText(t)}')"  ← ' 未跳脫
+//
+// 上述兩種情境一律改用 escapeJsArg()（定義於本函式下方）。
+// 實據：書名 "Silberschatz's ..." 曾使書單選單完全打不開（76efe94 / af13682）。
+function escapeHtmlText(str) {
   if (!str) return "";
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 // 用於 inline onclick 內的「JS 單引號字串」參數，例如 onclick="fn('${escapeJsArg(t)}')"。
-// escapeHtml 不足以勝任：HTML 屬性會先被解碼再交給 JS parser，所以把 ' 轉成 &#39;
+// escapeHtmlText 不足以勝任：HTML 屬性會先被解碼再交給 JS parser，所以把 ' 轉成 &#39;
 // 解碼後仍是 '，照樣截斷字串（實測："Silberschatz's ..." 觸發 SyntaxError，選單完全打不開）。
 // 正解是先做 JS 字面值跳脫，再做 HTML 屬性跳脫——順序不可顛倒。
 function escapeJsArg(str) {
@@ -1653,9 +1666,9 @@ function renderLibgenMirrorsList(mirrors) {
       statusBadge = `<span class="tag" style="background: rgba(16, 185, 129, 0.18); color: #34d399; font-size: 0.72rem;">🟢 通過驗證</span>`;
     } else if (m.validation_status === "incompatible_layout") {
       const brLink = m.br_id ? `<span title="點擊查看 BR 報告" style="cursor: pointer; text-decoration: underline;" onclick="showBrDetailModal('${m.br_id}', '${escapeJsArg(m.last_error || '')}')">[${m.br_id}]</span>` : "";
-      statusBadge = `<span class="tag" style="background: rgba(239, 68, 68, 0.18); color: #f87171; font-size: 0.72rem;" title="${escapeHtml(m.last_error || '結構無法解析')}">⚠️ 結構不相容 ${brLink}</span>`;
+      statusBadge = `<span class="tag" style="background: rgba(239, 68, 68, 0.18); color: #f87171; font-size: 0.72rem;" title="${escapeHtmlText(m.last_error || '結構無法解析')}">⚠️ 結構不相容 ${brLink}</span>`;
     } else if (m.validation_status === "offline") {
-      statusBadge = `<span class="tag" style="background: rgba(100, 116, 139, 0.2); color: var(--text-muted); font-size: 0.72rem;" title="${escapeHtml(m.last_error || '連線逾時')}">🔴 連線失敗</span>`;
+      statusBadge = `<span class="tag" style="background: rgba(100, 116, 139, 0.2); color: var(--text-muted); font-size: 0.72rem;" title="${escapeHtmlText(m.last_error || '連線逾時')}">🔴 連線失敗</span>`;
     } else {
       statusBadge = `<span class="tag" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; font-size: 0.72rem;">⏳ 待驗證</span>`;
     }
@@ -1675,16 +1688,16 @@ function renderLibgenMirrorsList(mirrors) {
     return `
       <div class="mirror-item-row status-${m.validation_status || 'unverified'}" id="row-${safeId}">
         <div style="display: flex; align-items: center; gap: 0.55rem; flex: 1; min-width: 0;">
-          <input type="checkbox" class="mirror-toggle-checkbox" data-url="${escapeHtml(m.url)}" ${m.enabled ? "checked" : ""} title="啟用/停用此來源" style="width: 16px; height: 16px; cursor: pointer;">
+          <input type="checkbox" class="mirror-toggle-checkbox" data-url="${escapeHtmlText(m.url)}" ${m.enabled ? "checked" : ""} title="啟用/停用此來源" style="width: 16px; height: 16px; cursor: pointer;">
           <div style="flex: 1; min-width: 0;">
             <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
-              <span style="font-family: monospace; font-weight: 700; font-size: 0.88rem; color: var(--text-primary);">${escapeHtml(m.url)}</span>
+              <span style="font-family: monospace; font-weight: 700; font-size: 0.88rem; color: var(--text-primary);">${escapeHtmlText(m.url)}</span>
               ${m.is_default ? `<span class="tag" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; font-size: 0.7rem;">內建</span>` : `<span class="tag" style="background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 0.7rem;">自訂</span>`}
               ${statusBadge}
               ${adapterBadge}
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              ${escapeHtml(m.note || "無備註")} • 抽樣解析: ${m.sample_records_count || 0} 筆
+              ${escapeHtmlText(m.note || "無備註")} • 抽樣解析: ${m.sample_records_count || 0} 筆
             </div>
           </div>
         </div>
@@ -1729,7 +1742,7 @@ async function handleValidateSingleMirror(url, safeId, btn) {
     if (report.validation_status === "verified") {
       showCustomAlert({
         title: "預檢驗證通過",
-        message: `鏡像 <b>${escapeHtml(url)}</b> 驗證成功！<br>• 適配器: <code>${report.adapter_type}</code><br>• 延遲: <code>${report.latency_ms} ms</code><br>• 抽樣解析: <code>${report.sample_records_count} 筆</code><br><span style="color: #10b981;">已正式啟用並納入檢索與下載輪替池。</span>`,
+        message: `鏡像 <b>${escapeHtmlText(url)}</b> 驗證成功！<br>• 適配器: <code>${report.adapter_type}</code><br>• 延遲: <code>${report.latency_ms} ms</code><br>• 抽樣解析: <code>${report.sample_records_count} 筆</code><br><span style="color: #10b981;">已正式啟用並納入檢索與下載輪替池。</span>`,
         icon: "🟢",
         type: "success",
         anchor: btn
@@ -1737,7 +1750,7 @@ async function handleValidateSingleMirror(url, safeId, btn) {
     } else if (report.validation_status === "incompatible_layout") {
       showCustomAlert({
         title: "結構不相容 · 自動建立 BR 報告",
-        message: `鏡像 <b>${escapeHtml(url)}</b> 連線正常但無法解析 HTML 表格。<br><span style="color: #ef4444; font-size: 0.85rem;">已自動發送 Bug Report：<code>${report.br_id}</code></span><br>該來源已被隔離暫停，待開發專屬解析適配器。`,
+        message: `鏡像 <b>${escapeHtmlText(url)}</b> 連線正常但無法解析 HTML 表格。<br><span style="color: #ef4444; font-size: 0.85rem;">已自動發送 Bug Report：<code>${report.br_id}</code></span><br>該來源已被隔離暫停，待開發專屬解析適配器。`,
         icon: "⚠️",
         type: "warning",
         anchor: btn
@@ -1745,7 +1758,7 @@ async function handleValidateSingleMirror(url, safeId, btn) {
     } else {
       showCustomAlert({
         title: "連線失敗",
-        message: `鏡像 <b>${escapeHtml(url)}</b> 連線失敗: ${escapeHtml(report.error_message || '逾時')}`,
+        message: `鏡像 <b>${escapeHtmlText(url)}</b> 連線失敗: ${escapeHtmlText(report.error_message || '逾時')}`,
         icon: "❌",
         type: "error",
         anchor: btn
@@ -1865,7 +1878,7 @@ async function handleAddCustomMirror() {
     if (report.validation_status === "verified") {
       showCustomAlert({
         title: "來源新增並通過驗證",
-        message: `自訂來源 <b>${escapeHtml(formattedUrl)}</b> 預檢驗證通過（${report.adapter_type}，${report.latency_ms} ms），已正式上線啟用！`,
+        message: `自訂來源 <b>${escapeHtmlText(formattedUrl)}</b> 預檢驗證通過（${report.adapter_type}，${report.latency_ms} ms），已正式上線啟用！`,
         icon: "🎉",
         type: "success",
         anchor: addBtn
@@ -1873,7 +1886,7 @@ async function handleAddCustomMirror() {
     } else if (report.validation_status === "incompatible_layout") {
       showCustomAlert({
         title: "來源新增但結構無法解析",
-        message: `來源 <b>${escapeHtml(formattedUrl)}</b> 連線正常但無法以現有爬蟲解析，已<b>自動向 Repo 發送 ${report.br_id}</b> 並暫停隔離，等待適配器修復。`,
+        message: `來源 <b>${escapeHtmlText(formattedUrl)}</b> 連線正常但無法以現有爬蟲解析，已<b>自動向 Repo 發送 ${report.br_id}</b> 並暫停隔離，等待適配器修復。`,
         icon: "⚠️",
         type: "warning",
         anchor: addBtn
@@ -1881,7 +1894,7 @@ async function handleAddCustomMirror() {
     } else {
       showCustomAlert({
         title: "來源無法連線",
-        message: `來源 <b>${escapeHtml(formattedUrl)}</b> 無法連線（${report.error_message || '逾時'}），已加入但預設處於停用狀態。`,
+        message: `來源 <b>${escapeHtmlText(formattedUrl)}</b> 無法連線（${report.error_message || '逾時'}），已加入但預設處於停用狀態。`,
         icon: "🔴",
         type: "warning",
         anchor: addBtn
@@ -1928,7 +1941,7 @@ async function handleDeleteMirror(url, event) {
   const anchor = event ? (event.currentTarget || event.target) : null;
   const confirmed = await showCustomConfirm({
     title: "刪除來源",
-    message: `確定要移除鏡像來源「<b>${escapeHtml(url)}</b>」嗎？`,
+    message: `確定要移除鏡像來源「<b>${escapeHtmlText(url)}</b>」嗎？`,
     confirmText: "確認刪除",
     cancelText: "取消",
     isDanger: true,
@@ -2017,7 +2030,7 @@ async function loadDispatchedIssuesNotice() {
 function showBrDetailModal(brId, errorMsg) {
   showCustomAlert({
     title: `Bug Report: ${brId}`,
-    message: `此來源目前處於隔離狀態，失敗詳情：<br><pre style="background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; margin-top: 0.4rem;">${escapeHtml(errorMsg || '未知錯誤')}</pre><br><span style="font-size: 0.8rem; color: var(--text-muted);">報告已寫入專案 <code>issues/${brId}.md</code>，待開發適配器修復後即可重新驗證上線。</span>`,
+    message: `此來源目前處於隔離狀態，失敗詳情：<br><pre style="background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; margin-top: 0.4rem;">${escapeHtmlText(errorMsg || '未知錯誤')}</pre><br><span style="font-size: 0.8rem; color: var(--text-muted);">報告已寫入專案 <code>issues/${brId}.md</code>，待開發適配器修復後即可重新驗證上線。</span>`,
     icon: "📋"
   });
 }
@@ -2152,7 +2165,7 @@ async function loadCollectionsList(selectColId = null) {
             <div class="collection-sidebar-item ${f.id === activeId ? 'active' : ''}" onclick="selectCollection('${f.id}')">
               <span style="display: flex; align-items: center; gap: 0.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                 <span>📁</span>
-                <span>${escapeHtml(f.title)}</span>
+                <span>${escapeHtmlText(f.title)}</span>
               </span>
               <span class="collection-count-badge">${count}</span>
             </div>
@@ -2190,7 +2203,7 @@ async function loadCollectionsList(selectColId = null) {
       <div class="collection-sidebar-item ${c.collection_id === activeId ? 'active' : ''}" onclick="selectCollection('${c.collection_id}')">
         <span style="display: flex; align-items: center; gap: 0.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
           <span>${c.icon || '📚'}</span>
-          <span>${escapeHtml(c.name)}</span>
+          <span>${escapeHtmlText(c.name)}</span>
         </span>
         <span class="collection-count-badge">${c.items_count}</span>
       </div>
@@ -2214,7 +2227,7 @@ function renderChromeFolderDetail(folderNode) {
         <div>
           <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
             <span>📁</span>
-            <span>${escapeHtml(folderNode.title)}</span>
+            <span>${escapeHtmlText(folderNode.title)}</span>
           </h3>
           <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Chrome 原生書籤資料夾 • 共 ${items.length} 筆書籤</p>
         </div>
@@ -2230,10 +2243,10 @@ function renderChromeFolderDetail(folderNode) {
       ` : items.map(it => `
         <div class="book-card" style="margin-bottom: 0; align-items: center;">
           <div class="book-main">
-            <div class="book-title">${escapeHtml(it.title)}</div>
+            <div class="book-title">${escapeHtmlText(it.title)}</div>
             <div class="book-meta">
               <span class="tag tag-local" title="Chrome 原生書籤">🌐</span>
-              <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(it.url)}</span>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtmlText(it.url)}</span>
             </div>
           </div>
         <div class="book-actions">
@@ -2250,7 +2263,7 @@ async function removeChromeBookmark(bookmarkId, title, event) {
   const anchor = event ? (event.currentTarget || event.target) : null;
   const confirmed = await showCustomConfirm({
     title: "刪除書籤",
-    message: `確定要刪除「<b>${escapeHtml(title || '此書籤')}</b>」嗎？`,
+    message: `確定要刪除「<b>${escapeHtmlText(title || '此書籤')}</b>」嗎？`,
     confirmText: "確認刪除",
     cancelText: "取消",
     isDanger: true,
@@ -2285,9 +2298,9 @@ async function loadCollectionDetail(collectionId) {
           <div>
             <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
               <span>${col.icon || '📚'}</span>
-              <span>${escapeHtml(col.name)}</span>
+              <span>${escapeHtmlText(col.name)}</span>
             </h3>
-            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(col.description || '自訂書單')} • 共 ${col.items.length} 本書籍</p>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtmlText(col.description || '自訂書單')} • 共 ${col.items.length} 本書籍</p>
           </div>
         </div>
         <div style="display: flex; gap: 0.5rem;">
@@ -2305,11 +2318,11 @@ async function loadCollectionDetail(collectionId) {
         ` : col.items.map(it => `
           <div class="book-card" style="margin-bottom: 0;">
             <div class="book-main">
-              <div class="book-title">${escapeHtml(it.work.title)}</div>
+              <div class="book-title">${escapeHtmlText(it.work.title)}</div>
               <div class="book-meta">
                 <span class="tag tag-local" title="本地書單藏書">💾</span>
                 ${getFormatTag(it.work.format)}
-                <span>✍️ ${escapeHtml(it.work.authors_display || "未知作者")}</span>
+                <span>✍️ ${escapeHtmlText(it.work.authors_display || "未知作者")}</span>
                 ${it.work.publication_year ? `<span>• ${it.work.publication_year}年</span>` : ''}
               </div>
             </div>
@@ -2415,7 +2428,7 @@ async function deleteCollectionPrompt(colId, colName, event) {
   const anchor = event ? (event.currentTarget || event.target) : null;
   const confirmed = await showCustomConfirm({
     title: "刪除書單",
-    message: `確定要刪除「<b>${escapeHtml(colName || '此書單')}</b>」嗎？<br><span style="font-size: 0.8rem; color: var(--text-muted);">（不會刪除書籍本體檔案）</span>`,
+    message: `確定要刪除「<b>${escapeHtmlText(colName || '此書單')}</b>」嗎？<br><span style="font-size: 0.8rem; color: var(--text-muted);">（不會刪除書籍本體檔案）</span>`,
     confirmText: "確認刪除",
     cancelText: "保留書單",
     isDanger: true,
@@ -2449,7 +2462,7 @@ async function removeBookFromCollection(colId, workId, bookTitle, event) {
   const anchor = event ? (event.currentTarget || event.target) : null;
   const confirmed = await showCustomConfirm({
     title: "移除書籍",
-    message: `確定要從此書單移除「<b>${escapeHtml(bookTitle || '此書籍')}</b>」嗎？`,
+    message: `確定要從此書單移除「<b>${escapeHtmlText(bookTitle || '此書籍')}</b>」嗎？`,
     confirmText: "確認移除",
     cancelText: "取消",
     isDanger: true,
@@ -2519,7 +2532,7 @@ async function exportCollectionsAsNetscapeHtml(anchor) {
 
     let totalBooks = 0;
     collections.forEach(col => {
-      html += `        <DT><H3 ADD_DATE="${timestamp}" LAST_MODIFIED="${timestamp}">${escapeHtml(col.name)}</H3>\n`;
+      html += `        <DT><H3 ADD_DATE="${timestamp}" LAST_MODIFIED="${timestamp}">${escapeHtmlText(col.name)}</H3>\n`;
       html += `        <DL><p>\n`;
       (col.items || []).forEach(it => {
         totalBooks++;
@@ -2527,7 +2540,7 @@ async function exportCollectionsAsNetscapeHtml(anchor) {
         const authors = (it.work && it.work.authors) ? it.work.authors.map(a => a.name).join(", ") : "";
         const displayTitle = authors ? `${title} - ${authors}` : title;
         const workUrl = `${window.location.origin}${BASE_PATH}/reader?work_id=${it.work_id}`;
-        html += `            <DT><A HREF="${workUrl}" ADD_DATE="${timestamp}">${escapeHtml(displayTitle)}</A>\n`;
+        html += `            <DT><A HREF="${workUrl}" ADD_DATE="${timestamp}">${escapeHtmlText(displayTitle)}</A>\n`;
       });
       html += `        </DL><p>\n`;
     });
@@ -2761,9 +2774,9 @@ async function openQuickCollection(workId, title) {
             <label class="quick-col-row">
               <span style="display: flex; align-items: center; gap: 0.5rem;">
                 <span>📁</span>
-                <span style="font-weight: 600;">${escapeHtml(f.title)}</span>
+                <span style="font-weight: 600;">${escapeHtmlText(f.title)}</span>
               </span>
-              <input type="checkbox" class="quick-col-checkbox" data-folder-id="${f.id}" data-folder-name="${escapeHtml(f.title)}" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+              <input type="checkbox" class="quick-col-checkbox" data-folder-id="${f.id}" data-folder-name="${escapeHtmlText(f.title)}" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
             </label>
           `;
         }).join("");
@@ -2802,7 +2815,7 @@ async function openQuickCollection(workId, title) {
         <label class="quick-col-row">
           <span style="display: flex; align-items: center; gap: 0.5rem;">
             <span>${c.icon || '📚'}</span>
-            <span style="font-weight: 600;">${escapeHtml(c.name)}</span>
+            <span style="font-weight: 600;">${escapeHtmlText(c.name)}</span>
           </span>
           <input type="checkbox" class="quick-col-checkbox" data-col-id="${c.collection_id}" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
         </label>
@@ -2812,7 +2825,7 @@ async function openQuickCollection(workId, title) {
     console.error("載入快速收藏失敗:", err);
     if (isStale()) { stopSlowTimer(); return; }
     stopSlowTimer();
-    listEl.innerHTML = `<p data-quick-state="error" style="color: #ef4444; text-align: center; padding: 1rem;">⚠️ 載入書單失敗<br><span style="font-size: 0.82rem;">${escapeHtml(err && err.message ? err.message : String(err))}</span></p>`;
+    listEl.innerHTML = `<p data-quick-state="error" style="color: #ef4444; text-align: center; padding: 1rem;">⚠️ 載入書單失敗<br><span style="font-size: 0.82rem;">${escapeHtmlText(err && err.message ? err.message : String(err))}</span></p>`;
   }
 }
 
@@ -2901,12 +2914,12 @@ function renderTreeNode(node, parentPath = "") {
   return `
     <div class="tree-node" id="node_${node.category_id}">
       <div class="tree-header ${node.category_id === currentActiveCategoryId ? 'active' : ''}" 
-           title="點擊查看「${escapeHtml(node.name)}」架位藏書"
+           title="點擊查看「${escapeHtmlText(node.name)}」架位藏書"
            onclick="handleCategoryClick('${node.category_id}', '${escapeJsArg(node.name)}', '${node.icon}', '${escapeJsArg(currentPath)}')">
         <div style="display: flex; align-items: center; gap: 0.35rem; overflow: hidden;">
           ${hasChildren ? `<span class="tree-expander expanded" title="展開/折疊分類" onclick="event.stopPropagation(); toggleTreeNode('${node.category_id}')">▶</span>` : `<span style="width: 1.2rem;"></span>`}
           <span>${node.icon || '📖'}</span>
-          <span style="font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(node.name)}</span>
+          <span style="font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtmlText(node.name)}</span>
         </div>
         <span class="tree-badge" title="共 ${node.works_count} 本藏書">${node.works_count}</span>
       </div>
@@ -2950,7 +2963,7 @@ async function handleCategoryClick(catId, name, icon, breadcrumbs) {
 
 async function loadShelfWorks(catId, name, icon, breadcrumbs) {
   document.getElementById("shelfBreadcrumbs").innerText = breadcrumbs;
-  document.getElementById("shelfTitle").innerHTML = `${icon || '📖'} ${escapeHtml(name)}`;
+  document.getElementById("shelfTitle").innerHTML = `${icon || '📖'} ${escapeHtmlText(name)}`;
   const shelfGrid = document.getElementById("shelfGrid");
   shelfGrid.innerHTML = `<p style="color: var(--text-muted); padding: 2rem; grid-column: 1 / -1; text-align: center;">載入書架藏書中...</p>`;
 
@@ -3036,11 +3049,11 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs) {
               </div>
               <span style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">${w.publication_year ? `${w.publication_year}年` : ''}</span>
             </div>
-            <div style="font-weight: 700; font-size: 0.98rem; line-height: 1.4; color: var(--text-primary); margin-bottom: 0.35rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;" title="${escapeHtml(w.title)}">
-              ${escapeHtml(w.title)}
+            <div style="font-weight: 700; font-size: 0.98rem; line-height: 1.4; color: var(--text-primary); margin-bottom: 0.35rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;" title="${escapeHtmlText(w.title)}">
+              ${escapeHtmlText(w.title)}
             </div>
             <div style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-              ✍️ ${escapeHtml(w.authors_display || "未知作者")}
+              ✍️ ${escapeHtmlText(w.authors_display || "未知作者")}
             </div>
           </div>
           ${actionsHtml}
