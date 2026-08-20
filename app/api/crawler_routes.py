@@ -38,10 +38,19 @@ class DownloadRequestItem(BaseModel):
     # None 代表「不知道」。舊前端（或任何不帶這個欄位的 client）送來的 payload
     # 必須仍能通過驗證，所以這裡是 Optional 而非必填。
     publication_year: Optional[int] = None
+    # FR-20260820_234500：下載請求可預先帶書單意圖。目前前端不送這個欄位
+    # （使用者的指定動作發生在佇列，走 /jobs/{id}/collections），
+    # 但參數鏈上不能只有這一環缺它——否則將來補要再動一次同樣的檔。
+    collection_ids: Optional[List[str]] = None
 
 
 class BatchDownloadRequest(BaseModel):
     items: List[DownloadRequestItem]
+
+
+class AssignCollectionsRequest(BaseModel):
+    """對已入列的 job 事後指定書單（FR-20260820_234500 R1/R4）。"""
+    collection_ids: List[str]
 
 
 @router.get("/search")
@@ -121,7 +130,8 @@ async def enqueue_single_download(
         authors=req.authors,
         extension=req.extension or "pdf",
         mirror_links=req.mirror_links,
-        publication_year=req.publication_year
+        publication_year=req.publication_year,
+        collection_ids=req.collection_ids
     )
     return job.to_dict()
 
@@ -151,6 +161,7 @@ async def enqueue_batch_download(
             "extension": item.extension or "pdf",
             "mirror_links": item.mirror_links,
             "publication_year": item.publication_year,
+            "collection_ids": item.collection_ids,
         }
         for item in req.items
         if item.md5
@@ -221,6 +232,48 @@ async def delete_download_job(job_id: str, worker: DownloadWorker = Depends(get_
     if not success:
         raise HTTPException(status_code=404, detail="找不到指定任務")
     return {"status": "ok", "deleted_job_id": job_id}
+
+
+@router.post("/jobs/{job_id}/collections")
+async def assign_job_collections(
+    job_id: str,
+    req: AssignCollectionsRequest,
+    worker: DownloadWorker = Depends(get_worker)
+):
+    """指定某個下載任務完成後要歸入哪些自訂書單（FR-20260820_234500 R1/R4）。
+
+    **回應必須讓兩種時機可區分**，否則前端無法分辨「已寫進 DB」與「只記下意圖」：
+      - `applied=true`  → job 已完成、work_id 存在，本次呼叫已即時寫入資料庫（R4）
+      - `applied=false` → job 尚未完成，意圖已持久化，待下載完成後自動歸戶（R1/R2）
+
+    不存在的 collection_id 一律 422 **fail loud**（AC5），並指名是哪一個。
+
+    ⚠ `assign_collections` 內含同步 SQLite I/O（驗證書單存在、寫入 collection_item）
+    與同步檔案 I/O（`_save_jobs_to_disk`）。本路由是 async def，直接跑會卡住整個
+    事件迴圈上的所有請求，因此整段丟進 threadpool——與本檔 `live_search` 的
+    `_annotate_local_status` 同一個處方（BR-20260820_210000）。
+    """
+    try:
+        job = await run_in_threadpool(worker.assign_collections, job_id, req.collection_ids)
+    except ValueError as e:
+        # 「書單不存在」與「job 不存在」必須是不同的狀態碼，不得共用同一個輸出。
+        raise HTTPException(status_code=422, detail=str(e))
+
+    if job is None:
+        raise HTTPException(status_code=404, detail="找不到指定任務")
+
+    applied = bool(job.status == "completed" and job.work_id)
+    return {
+        "status": "ok",
+        "job_id": job.job_id,
+        "collection_ids": job.collection_ids,
+        # 已寫進 DB（applied=true）vs 只記下意圖待歸戶（applied=false/pending=true）
+        "applied": applied,
+        "pending": not applied,
+        "work_id": job.work_id,
+        # 歸戶失敗必須有明確訊號，不可與「沒指定」共用輸出。
+        "collection_sync_error": job.collection_sync_error,
+    }
 
 
 @router.post("/jobs/{job_id}/retry")

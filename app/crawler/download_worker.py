@@ -26,7 +26,8 @@ class DownloadJob:
         authors: Optional[str] = None,
         extension: str = "pdf",
         mirror_links: Optional[List[str]] = None,
-        publication_year: Optional[int] = None
+        publication_year: Optional[int] = None,
+        collection_ids: Optional[List[str]] = None
     ):
         self.job_id = job_id
         self.md5 = md5.lower()
@@ -37,6 +38,19 @@ class DownloadJob:
         # None 代表「不知道」，與 0（已查證確無）不同。缺值一律保持 None，
         # 不得退化成 0 或空字串——那會讓「上游沒給」與「上游給了 0」共用同一個輸出。
         self.publication_year = publication_year
+        # 使用者在佇列當下表達的「這本書要進哪些書單」意圖（FR-20260820_234500 R1/R2）。
+        # 指定發生時 `work_id` 通常還是 None（下載完成才產生），所以這裡存的是
+        # **意圖**，不是既成事實；真正寫進 DB 由 `_apply_collections()` 負責。
+        self.collection_ids: List[str] = list(collection_ids or [])
+        # 歸戶結果的**失敗態**專用格。三態必須互斥可辨，不得共用同一個輸出：
+        #   collection_ids == []   且 error is None → 使用者根本沒指定（缺席態）
+        #   collection_ids != []   且 error is None → 已指定；未完成＝待歸戶，已完成＝歸戶成功
+        #   error is not None                      → 已指定但寫入失敗，字串帶「是哪幾個 cid 失敗」
+        # 少了這一格，「書單被刪導致寫不進去」會與「使用者沒指定」在 to_dict()、
+        # 存檔與 UI 上完全一樣——那正是本 repo 已重複踩過三次的失效類別
+        # （mirror-resolver 回 None / extension 三態收斂成一個 timeout /
+        #  publication_year 缺值退化成 0）。
+        self.collection_sync_error: Optional[str] = None
         self.status = "queued"  # queued, downloading, paused, completed, failed
         self.progress_percent = 0
         self.downloaded_bytes = 0
@@ -55,6 +69,11 @@ class DownloadJob:
             "authors": self.authors,
             "extension": self.extension,
             "publication_year": self.publication_year,
+            # 這兩個 key 必須同時出現在 to_dict() 與 _load_jobs_from_disk()。
+            # 只寫其一 = 「存了但重啟後消失」，而且不寫往返測試就看不出來
+            # （BR-20260820_131500 的 publication_year 是同一條鏈上的前例）。
+            "collection_ids": list(self.collection_ids),
+            "collection_sync_error": self.collection_sync_error,
             "status": self.status,
             "progress_percent": self.progress_percent,
             "downloaded_bytes": self.downloaded_bytes,
@@ -123,7 +142,10 @@ class DownloadWorker:
                     mirror_links=item.get("mirror_links", []),
                     # 舊格式 jobs.json 沒有這個 key，必須用 .get 而非 ["..."]，
                     # 否則整個 worker 啟動會被一份既有佇列檔炸掉。
-                    publication_year=item.get("publication_year")
+                    publication_year=item.get("publication_year"),
+                    # 同上：舊格式沒有這個 key。`or []` 而非 `.get(k, [])` 是因為
+                    # 舊檔也可能寫進 null（to_dict 時是空 list，但手改過的檔不保證）。
+                    collection_ids=item.get("collection_ids") or []
                 )
                 job.status = item.get("status", "queued")
                 job.progress_percent = item.get("progress_percent", 0)
@@ -131,6 +153,9 @@ class DownloadWorker:
                 job.total_bytes = item.get("total_bytes", 0)
                 job.retry_count = item.get("retry_count", 0)
                 job.error_message = item.get("error_message")
+                # 歸戶失敗訊號也必須跟著往返，否則重啟後一個歸戶失敗的 job 會
+                # 復原成「看起來完全正常」——失敗態静默退化成成功態。
+                job.collection_sync_error = item.get("collection_sync_error")
                 job.work_id = item.get("work_id")
                 job.created_at = item.get("created_at", datetime.now(timezone.utc).isoformat())
                 job.updated_at = item.get("updated_at", job.created_at)
@@ -279,6 +304,7 @@ class DownloadWorker:
                 extension=item.get("extension") or "pdf",
                 mirror_links=item.get("mirror_links"),
                 publication_year=item.get("publication_year"),
+                collection_ids=item.get("collection_ids"),
             )
             self.jobs[job.job_id] = job
             # 同一批次內的重複也要擋：同一個 md5 在一個 request 裡出現兩次時，
@@ -306,6 +332,7 @@ class DownloadWorker:
         extension: str = "pdf",
         mirror_links: Optional[List[str]] = None,
         publication_year: Optional[int] = None,
+        collection_ids: Optional[List[str]] = None,
         autostart: bool = True
     ) -> DownloadJob:
         """將書籍加入下載佇列。
@@ -337,6 +364,7 @@ class DownloadWorker:
                 "extension": extension,
                 "mirror_links": mirror_links,
                 "publication_year": publication_year,
+                "collection_ids": collection_ids,
             }],
             autostart=autostart,
         )[0]
@@ -449,6 +477,97 @@ class DownloadWorker:
         job.retry_count = 0
         job.updated_at = datetime.now(timezone.utc).isoformat()
         return self.start_job(job_id)
+
+    def _known_collection_ids(self) -> set:
+        """回傳目前存在的所有 collection_id 集合。
+
+        刻意用 `dao.list_collections()`（**一次** DB 往返、不載 items）而不是對每個
+        cid 呼叫 `dao.get_collection(cid)`（每個 cid **一次**往返，且會連同該書單的
+        所有 items 一起載入）。驗證只需要 id 集合，載 items 是白工；`collection_ids`
+        是複數，迴圈內查 DB 會讓成本隨選取數線性增長。
+        """
+        return {c.collection_id for c in self.pipeline.dao.list_collections()}
+
+    def assign_collections(self, job_id: str, collection_ids: List[str]) -> Optional[DownloadJob]:
+        """指定某個 job 完成後要歸入哪些書單（FR-20260820_234500 R1/R2/R4）。
+
+        兩種時機、同一個入口，但**行為不同且必須可區分**：
+          - job 尚未完成（`work_id is None`）→ 只記下意圖並落盤，等下載完成由
+            `_apply_collections()` 真正寫入。
+          - job 已完成（`work_id` 存在）→ 立刻寫入 DB，即時生效（R4）。
+        呼叫端要靠 `job.work_id is not None` 判斷發生了哪一種；兩者共用同一個回應的話，
+        前端無法分辨「已寫進 DB」與「只記下意圖」。
+
+        不存在的 collection_id 一律 `ValueError`**不靜默略過**（AC5）——略過會讓
+        「指定了三個書單」與「指定了三個但只有兩個是真的」共用同一個輸出。
+        """
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+
+        requested = [str(c) for c in (collection_ids or [])]
+        known = self._known_collection_ids()
+        missing = [cid for cid in requested if cid not in known]
+        if missing:
+            raise ValueError(
+                f"指定的書單不存在：{', '.join(missing)}。"
+                f"（目前可用書單共 {len(known)} 個；靜默略過會讓「指定成功」與"
+                "「指定到一個已被刪除的書單」共用同一個輸出）"
+            )
+
+        job.collection_ids = requested
+        # 重新指定＝重新嘗試，舊的失敗訊號必須清掉，否則一個已修好的 job 會永遠
+        # 掛著上一次的錯誤字串。
+        job.collection_sync_error = None
+        job.updated_at = datetime.now(timezone.utc).isoformat()
+
+        # R4：已完成的 job 立即生效，不必重跑下載。
+        if job.status == "completed" and job.work_id:
+            self._apply_collections(job)
+
+        self._save_jobs_to_disk()
+        return job
+
+    def _apply_collections(self, job: DownloadJob) -> None:
+        """把 job 上記錄的書單意圖真正寫進資料庫。
+
+        缺席態與失敗態**不得共用輸出**（本 repo 已重複踩過三次的失效類別）：
+          - 沒指定任何書單 → 直接返回，不 log、不寫 `collection_sync_error`。
+            「什麼都沒發生」本來就該是無聲的。
+          - 指定了但寫入失敗 → `collection_sync_error` 記下**是哪幾個 cid 失敗**
+            並 `log.warning` 出聲。只寫「有錯」不夠：那會讓「三個全失敗」與
+            「三個裡失敗一個」共用同一個輸出。
+        """
+        if not job.collection_ids:
+            return
+
+        if not job.work_id:
+            # 這是呼叫端的錯誤（work_id 還沒產生就叫這個方法），不是使用者的指定失敗。
+            # 必須出聲，否則歸戶會靜默不發生。
+            log.warning(
+                "job %s 尚無 work_id 卻被要求歸戶，本次未寫入任何書單（指定的書單：%s）",
+                job.job_id, ", ".join(job.collection_ids),
+            )
+            job.collection_sync_error = "尚未產生 work_id，無法寫入書單"
+            return
+
+        failed: List[str] = []
+        for cid in job.collection_ids:
+            try:
+                self.pipeline.dao.add_work_to_collection(cid, job.work_id)
+            except Exception as e:
+                failed.append(f"{cid}({type(e).__name__}: {e})")
+
+        if failed:
+            job.collection_sync_error = (
+                f"{len(failed)}/{len(job.collection_ids)} 個書單寫入失敗：{'; '.join(failed)}"
+            )
+            log.warning(
+                "job %s 歸戶部分失敗，work_id=%s：%s",
+                job.job_id, job.work_id, job.collection_sync_error,
+            )
+        else:
+            job.collection_sync_error = None
 
     def clear_completed(self) -> int:
         """清理所有已完成狀態的下載任務記錄。"""
@@ -623,3 +742,9 @@ class DownloadWorker:
         job.progress_percent = 100
         job.error_message = None
         job.updated_at = datetime.now(timezone.utc).isoformat()
+
+        # 落地後自動歸戶（FR-20260820_234500 R3）。
+        # AC6（下載失敗的 job 不得產生任何書單寫入）由**控制流**保證而非由 if 保證：
+        # 上面任何一步失敗都會 raise，執行根本走不到這一行。用 `if job.status == "failed"`
+        # 去擋是比較弱的寫法——那要求失敗路徑一定有人記得把狀態標對。
+        self._apply_collections(job)

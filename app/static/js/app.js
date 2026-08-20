@@ -24,7 +24,7 @@ let renderedCardSigByMd5 = new Map();
 
 // 全域 Modal / 獨立頁切換管理器（支援頂部導航列直接無縫切換、互斥關閉與高亮）
 function closeAllModals() {
-  const allModalIds = ["queueModal", "uploadModal", "detailModal", "settingsModal", "collectionsModal", "quickCollectionModal", "bookstallModal"];
+  const allModalIds = ["queueModal", "uploadModal", "detailModal", "settingsModal", "collectionsModal", "quickCollectionModal", "queueCollectionModal", "bookstallModal"];
   allModalIds.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.remove("active", "in-detail-view", "in-shelf-view");
@@ -237,6 +237,12 @@ function initEventListeners() {
   const closeQuickCollectionBtn = document.getElementById("closeQuickCollectionBtn");
   const saveQuickCollectionBtn = document.getElementById("saveQuickCollectionBtn");
   if (closeQuickCollectionBtn) closeQuickCollectionBtn.addEventListener("click", () => document.getElementById("quickCollectionModal").classList.remove("active"));
+
+  // 佇列指定書單 modal（FR-20260820_234500）
+  const closeQueueColBtn = document.getElementById("closeQueueCollectionBtn");
+  if (closeQueueColBtn) closeQueueColBtn.addEventListener("click", () => document.getElementById("queueCollectionModal").classList.remove("active"));
+  const saveQueueColBtn = document.getElementById("saveQueueCollectionBtn");
+  if (saveQueueColBtn) saveQueueColBtn.addEventListener("click", saveQueueCollections);
   if (saveQuickCollectionBtn) saveQuickCollectionBtn.addEventListener("click", saveQuickCollections);
 
   // 逛線上書攤 Modal 事件
@@ -255,6 +261,7 @@ function initEventListeners() {
   bindMobileBack("detailMobileBackBtn", () => document.getElementById("detailModal").classList.remove("active"));
   bindMobileBack("settingsMobileBackBtn", closeAllModals);
   bindMobileBack("quickMobileBackBtn", () => document.getElementById("quickCollectionModal").classList.remove("active"));
+  bindMobileBack("queueColMobileBackBtn", () => document.getElementById("queueCollectionModal").classList.remove("active"));
   bindMobileBack("collectionsMobileBackBtn", () => {
     const colModal = document.getElementById("collectionsModal");
     if (colModal.classList.contains("in-detail-view")) {
@@ -1204,11 +1211,25 @@ async function refreshQueueModal() {
 
       const sizeInfo = j.total_bytes > 0 ? `${(j.downloaded_bytes / (1024 * 1024)).toFixed(1)} / ${(j.total_bytes / (1024 * 1024)).toFixed(1)} MB` : "";
 
+      // 書單指定狀態（FR-20260820_234500）——三態必須在畫面上就分得出來：
+      //   沒指定         → 不顯示 badge（缺席態本來就該是無聲的）
+      //   指定了待歸戶   → 📚 N（還沒寫進 DB，等下載完成）
+      //   指定了但失敗   → ⚠️ 帶原因（絕不可與「沒指定」長得一樣）
+      const colIds = Array.isArray(j.collection_ids) ? j.collection_ids : [];
+      let colBadgeHtml = "";
+      if (j.collection_sync_error) {
+        colBadgeHtml = `<span style="font-size: 0.75rem; color: #ef4444; border: 1px solid rgba(239,68,68,0.4); border-radius: 4px; padding: 0.05rem 0.35rem;" title="${escapeHtmlText(j.collection_sync_error)}">⚠️ 歸戶失敗</span>`;
+      } else if (colIds.length > 0) {
+        const pending = j.status !== "completed" || !j.work_id;
+        colBadgeHtml = `<span style="font-size: 0.75rem; color: var(--accent); border: 1px solid rgba(99,102,241,0.35); border-radius: 4px; padding: 0.05rem 0.35rem;" title="${pending ? '已指定 ' + colIds.length + ' 個書單，下載完成後自動歸戶' : '已歸入 ' + colIds.length + ' 個書單'}">📚 ${colIds.length}${pending ? ' 待歸戶' : ''}</span>`;
+      }
+      const isFav = colIds.includes("col_favorites");
+
       return `
         <div class="queue-item" style="padding: 0.85rem 1rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 0.25rem;">
             <span style="max-width: 72%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtmlText(j.title)}">《${escapeHtmlText(j.title)}》</span>
-            ${statusIconHtml}
+            <span style="display: flex; align-items: center; gap: 0.35rem;">${colBadgeHtml}${statusIconHtml}</span>
           </div>
           <div style="font-size: 0.8rem; color: var(--text-secondary); display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
             <span>MD5: ${j.md5}</span>
@@ -1219,6 +1240,8 @@ async function refreshQueueModal() {
               <div class="progress-bar-fill" style="width: ${j.progress_percent}%;"></div>
             </div>
             <div style="display: flex; align-items: center; gap: 0.35rem; flex-shrink: 0;">
+              <button class="btn btn-outline" style="padding: 0.25rem 0.55rem; font-size: 0.95rem; line-height: 1; ${isFav ? 'color: #f59e0b; border-color: rgba(245,158,11,0.5);' : ''}" onclick="toggleQueueFavorite('${j.job_id}')" title="${isFav ? '從我的最愛移除' : '一鍵加入 ★ 我的最愛'}">${isFav ? '★' : '☆'}</button>
+              <button class="btn btn-outline" style="padding: 0.25rem 0.55rem; font-size: 0.95rem; line-height: 1;" onclick="openQueueCollection('${j.job_id}', '${escapeJsArg(j.title)}')" title="指定歸屬書單">📚</button>
               ${j.status === "queued" ? `
                 <button class="btn btn-outline" style="padding: 0.25rem 0.55rem; font-size: 0.95rem; line-height: 1;" onclick="startJob('${j.job_id}')" title="開始下載">▶️</button>
               ` : ""}
@@ -2128,6 +2151,128 @@ let quickTargetWorkId = null;
 let quickTargetWorkTitle = null;
 // 遞增序號：使用者連續點不同書籍時，舊的載入回應不得寫進新開的選單
 let quickCollectionReqId = 0;
+
+// === 下載佇列指定書單（FR-20260820_234500）===
+// ⚠ 刻意**不重用** openQuickCollection / saveQuickCollections：
+// 那兩個函式開頭都是 `if (isChromeExtensionAvailable) { ... }`，extension 可用時
+// 直接吃 Chrome 書籤資料夾樹並 return，後端 /api/collections 整段不會執行——
+// 於是使用者選到的根本不是書單，寫回來的 id 也不是 collection_id。
+// 對本 FR 而言那是**壞的資料來源**，不是慢的資料來源。以下路徑只認後端書單。
+let queueColTargetJobId = null;
+let queueColReqId = 0;
+
+async function openQueueCollection(jobId, title) {
+  queueColTargetJobId = jobId;
+  const modal = document.getElementById("queueCollectionModal");
+  const listEl = document.getElementById("queueCollectionList");
+  const subEl = document.getElementById("queueCollectionSubtitle");
+  modal.classList.add("active");
+  subEl.innerText = `《${title}》`;
+
+  const reqId = ++queueColReqId;
+  const isStale = () => reqId !== queueColReqId;
+
+  // 等待 / 空 / 失敗三態必須可區分（沿用 BR-20260820_124500 已建立的形狀）
+  listEl.innerHTML = `<p data-queue-col-state="loading" style="color: var(--text-muted); text-align: center; padding: 1rem;">載入書單中…</p>`;
+  const t0 = performance.now();
+  const slowTimer = setInterval(() => {
+    if (isStale()) return clearInterval(slowTimer);
+    const el = listEl.querySelector('[data-queue-col-state="loading"]');
+    if (!el) return clearInterval(slowTimer);
+    el.innerHTML = `載入書單中…<br><span style="font-size: 0.82rem;">已等待 ${Math.round((performance.now() - t0) / 1000)} 秒，後端回應較慢</span>`;
+  }, 1000);
+
+  try {
+    const [colsRes, jobRes] = await Promise.all([
+      fetch(`${BASE_PATH}/api/collections`),
+      fetch(`${BASE_PATH}/api/crawler/jobs/${jobId}`)
+    ]);
+    if (!colsRes.ok) throw new Error(`書單清單 HTTP ${colsRes.status}`);
+    if (!jobRes.ok) throw new Error(`任務狀態 HTTP ${jobRes.status}`);
+
+    const collections = await colsRes.json();
+    const job = await jobRes.json();
+    if (isStale()) { clearInterval(slowTimer); return; }
+    clearInterval(slowTimer);
+
+    const assigned = new Set(Array.isArray(job.collection_ids) ? job.collection_ids : []);
+
+    if (!Array.isArray(collections) || collections.length === 0) {
+      listEl.innerHTML = `<p data-queue-col-state="empty" style="color: var(--text-muted); text-align: center; padding: 1rem;">📖 尚未建立任何個人書單<br><span style="font-size: 0.82rem;">可到「📚 個人書單」建立新書單後再回來指定</span></p>`;
+      return;
+    }
+
+    const errHtml = job.collection_sync_error
+      ? `<p style="font-size: 0.8rem; color: #ef4444; margin: 0 0 0.5rem;">⚠️ 上次歸戶失敗：${escapeHtmlText(job.collection_sync_error)}</p>`
+      : "";
+
+    listEl.innerHTML = errHtml + collections.map(c => `
+        <label class="quick-col-row">
+          <span style="display: flex; align-items: center; gap: 0.5rem;">
+            <span>${c.icon || '📚'}</span>
+            <span style="font-weight: 600;">${escapeHtmlText(c.name)}</span>
+          </span>
+          <input type="checkbox" class="queue-col-checkbox" data-col-id="${c.collection_id}" ${assigned.has(c.collection_id) ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+        </label>
+      `).join("");
+  } catch (err) {
+    clearInterval(slowTimer);
+    if (isStale()) return;
+    listEl.innerHTML = `<p data-queue-col-state="error" style="color: #ef4444; text-align: center; padding: 1rem;">⚠️ 載入書單失敗<br><span style="font-size: 0.82rem;">${escapeHtmlText(err && err.message ? err.message : String(err))}</span></p>`;
+  }
+}
+
+async function saveQueueCollections() {
+  if (!queueColTargetJobId) return;
+  const ids = Array.from(document.querySelectorAll(".queue-col-checkbox"))
+    .filter(cb => cb.checked)
+    .map(cb => cb.dataset.colId);
+  await assignQueueCollections(queueColTargetJobId, ids);
+  document.getElementById("queueCollectionModal").classList.remove("active");
+  queueColTargetJobId = null;
+}
+
+async function toggleQueueFavorite(jobId) {
+  // R1：★ 我的最愛必須一鍵可及，不要求使用者展開選單再找。
+  try {
+    const res = await fetch(`${BASE_PATH}/api/crawler/jobs/${jobId}`);
+    if (!res.ok) throw new Error(`任務狀態 HTTP ${res.status}`);
+    const job = await res.json();
+    const ids = new Set(Array.isArray(job.collection_ids) ? job.collection_ids : []);
+    if (ids.has("col_favorites")) ids.delete("col_favorites");
+    else ids.add("col_favorites");
+    await assignQueueCollections(jobId, Array.from(ids));
+  } catch (err) {
+    showCustomAlert({ title: "操作失敗", message: String(err && err.message ? err.message : err), icon: "❌", type: "error" });
+  }
+}
+
+async function assignQueueCollections(jobId, collectionIds) {
+  // 失敗必須出聲。靜默 catch 會讓「指定成功」與「指定被拒（書單已刪 / job 不見了）」
+  // 共用同一個輸出——那正是本 FR 要消滅的失效類別。
+  const res = await fetch(`${BASE_PATH}/api/crawler/jobs/${jobId}/collections`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ collection_ids: collectionIds })
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch (e) { payload = null; }
+
+  if (!res.ok) {
+    const detail = payload && payload.detail ? payload.detail : `HTTP ${res.status}`;
+    showCustomAlert({ title: "指定書單失敗", message: String(detail), icon: "⚠️", type: "error" });
+    await refreshQueueModal();
+    return null;
+  }
+
+  // applied=true（已寫進 DB，R4 即時生效）與 pending=true（只記下意圖，待下載完成）
+  // 必須讓使用者看得出差別。
+  if (payload && payload.collection_sync_error) {
+    showCustomAlert({ title: "部分書單未寫入", message: String(payload.collection_sync_error), icon: "⚠️", type: "error" });
+  }
+  await refreshQueueModal();
+  return payload;
+}
 
 async function openCollectionsModal(targetColId = null) {
   const modal = document.getElementById("collectionsModal");

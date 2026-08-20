@@ -316,6 +316,30 @@
     </div>
   </div>
 
+  <!-- 佇列項目指定書單 Modal（FR-20260820_234500）
+       刻意**不共用** quickCollectionModal：後者的 checkbox 依 Chrome extension 是否可用，
+       帶的是 data-folder-id（Chrome 書籤資料夾）或 data-col-id（書單），兩種語意混在同一個
+       容器裡。共用會讓儲存邏輯必須猜當下是哪一種，而 extension 可用時拿到的根本不是
+       collection_id。本 modal 只認書單，不碰 extension 任何一格。 -->
+  <div class="modal-backdrop" id="queueCollectionModal">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="mobile-back-btn" id="queueColMobileBackBtn" title="返回">&larr;</button>
+          <h3 style="font-size: 1.1rem; display: flex; align-items: center; gap: 0.35rem;">📚 指定歸屬書單</h3>
+        </div>
+        <button class="close-btn" id="closeQueueCollectionBtn" title="關閉">&times;</button>
+      </div>
+      <p id="queueCollectionSubtitle" style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.5rem;"></p>
+      <div id="queueCollectionList" style="margin: 0.5rem 0 1rem; max-height: 250px; overflow-y: auto;">
+        <!-- Checkbox 清單 -->
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+        <button class="btn btn-primary" id="saveQueueCollectionBtn" title="儲存指定" style="padding: 0.45rem 1rem;">儲存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 逛線上書攤 / 多階層樹狀分類 Modal -->
   <div class="modal-backdrop" id="bookstallModal">
     <div class="modal-card modal-card-xl">
