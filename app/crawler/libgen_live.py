@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import urllib.parse
@@ -34,6 +35,12 @@ class LibgenCrawler:
 
     @property
     def active_mirrors(self) -> List[str]:
+        """存活鏡像清單。**同步**——內含 DAO 的同步 SQLite 讀。
+
+        任何 `async def` 內的呼叫端必須改走 `_resolve_active_mirrors_async()`，
+        否則這一格 DB 讀會落在事件迴圈執行緒上（BR-20260820_210000 A 節）。
+        本 property 本身保留同步語意，供既有同步呼叫端（測試、validator）使用。
+        """
         if self._custom_mirrors:
             return self._custom_mirrors
         if self.dao:
@@ -44,6 +51,14 @@ class LibgenCrawler:
             except Exception:
                 pass
         return self.MIRRORS
+
+    async def _resolve_active_mirrors_async(self) -> List[str]:
+        """在 worker 執行緒上解析存活鏡像清單，使同步 SQLite 讀離開事件迴圈。
+
+        刻意**不**加快取：快取會讓「已修好」與「這條 DB 路徑根本沒被走到」
+        共用同一個輸出（BR-20260820_210000 A 節控制組要求）。
+        """
+        return await asyncio.to_thread(lambda: self.active_mirrors)
 
     # 出版年份辨識樣式。libgen 現行版型的 Year 欄位可能是光禿禿的四位數（`1987`），
     # 也可能是完整日期（`1972 June 01`）。取第一個落在合理區間的四位數。
@@ -274,7 +289,9 @@ class LibgenCrawler:
     async def _execute_single_search(self, client: httpx.AsyncClient, query_term: str, max_results: int) -> List[Dict[str, Any]]:
         """針對單一查詢詞向通過預檢驗證之存活鏡像發起 HTTP 檢索，支援 libgen_li 與 libgen_is 多適配器。"""
         encoded_query = urllib.parse.quote(query_term)
-        for mirror in self.active_mirrors:
+        # 同步 SQLite 讀移出事件迴圈執行緒（BR-20260820_210000 A 節）。
+        mirrors = await self._resolve_active_mirrors_async()
+        for mirror in mirrors:
             if "library.lol" in mirror:
                 continue
             is_libgen_is = any(k in mirror for k in ("libgen.is", "libgen.rs", "libgen.st"))
@@ -286,10 +303,13 @@ class LibgenCrawler:
             try:
                 resp = await client.get(search_url)
                 if resp.status_code == 200 and "table" in resp.text:
+                    # BeautifulSoup 全文解析是 CPU-bound，同樣移出事件迴圈執行緒
+                    # （BR-20260820_210000 A 節）。兩個 _parse_* 方法維持同步 def，
+                    # 以免破壞 validator.py 與既有測試的直接呼叫。
                     if is_libgen_is:
-                        results = self._parse_libgen_is_html(resp.text, mirror)
+                        results = await asyncio.to_thread(self._parse_libgen_is_html, resp.text, mirror)
                     else:
-                        results = self._parse_libgen_li_html(resp.text, mirror)
+                        results = await asyncio.to_thread(self._parse_libgen_li_html, resp.text, mirror)
                     if results:
                         return results
             except Exception:

@@ -1,5 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 from app.db.dao import CatalogDAO
 from app.crawler.libgen_live import LibgenCrawler
 from app.models.catalog import CategoryRead, CategoryTreeNode, CategoryWorksResponse, SearchResultItem
@@ -45,13 +46,20 @@ async def get_category_works(
     dao: CatalogDAO = Depends(get_dao),
     crawler: LibgenCrawler = Depends(get_crawler)
 ):
-    """取得特定分類（及子分類）下的所有藏書（支援本地典藏與漸進式雲端探索混合漫遊）。"""
-    cat = dao.get_category(category_id)
+    """取得特定分類（及子分類）下的所有藏書（支援本地典藏與漸進式雲端探索混合漫遊）。
+
+    本路由是 async def，body 直接跑在事件迴圈執行緒上。所有同步 SQLite 讀一律
+    丟進 threadpool——否則整個 process 的所有請求（含不碰 DB 的端點）都會被卡住。
+    見 BR-20260820_210000 B 節。
+    """
+    cat = await run_in_threadpool(dao.get_category, category_id)
     if not cat:
         raise HTTPException(status_code=404, detail="找不到該分類")
-    
-    total, local_items = dao.get_category_works(category_id, page=page, page_size=page_size)
-    
+
+    total, local_items = await run_in_threadpool(
+        dao.get_category_works, category_id, page=page, page_size=page_size
+    )
+
     items: List[SearchResultItem] = []
     seen_md5s = set()
 
@@ -78,17 +86,34 @@ async def get_category_works(
         cloud_query = CATEGORY_CLOUD_SEARCH_QUERIES.get(category_id) or cat.name
         try:
             raw_cloud = await crawler.search(cloud_query)
-            for cr in raw_cloud[:15]:
+            cloud_slice = raw_cloud[:15]
+
+            # 本地落地檢查改為單次批次查詢（原本是每筆一次 DB 往返，最多 15 次），
+            # 並整段丟進 threadpool。與 crawler_routes._annotate_local_status 同一形狀，
+            # 沿用 dao.find_works_by_hashes()（BR-20260820_210000 B 節）。
+            lookup_md5s = []
+            for cr in cloud_slice:
+                m = (cr.get("md5") or "").lower()
+                if m and m not in seen_md5s:
+                    lookup_md5s.append(m)
+
+            local_map = (
+                await run_in_threadpool(dao.find_works_by_hashes, lookup_md5s)
+                if lookup_md5s
+                else {}
+            )
+
+            for cr in cloud_slice:
                 cr_md5 = (cr.get("md5") or "").lower()
                 if cr_md5 and cr_md5 in seen_md5s:
                     continue
                 if cr_md5:
                     seen_md5s.add(cr_md5)
-                
+
                 # 檢查是否已在本地落地
-                local_wid = dao.find_work_by_hash(cr_md5) if cr_md5 else None
+                local_wid = local_map.get(cr_md5) if cr_md5 else None
                 tier = 0 if local_wid else 1
-                
+
                 items.append(SearchResultItem(
                     work_id=local_wid or cr.get("work_id", f"libgen_{cr_md5}"),
                     local_work_id=local_wid,
@@ -102,7 +127,7 @@ async def get_category_works(
                     availability_tier=tier,
                     snippet=""
                 ))
-        except Exception as e:
+        except Exception:
             # 雲端網路異常時優雅降級，不影響本地展示
             pass
 
