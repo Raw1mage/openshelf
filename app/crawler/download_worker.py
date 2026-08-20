@@ -216,6 +216,88 @@ class DownloadWorker:
         self._save_jobs_to_disk()
         return stopped
 
+    # 「這個 md5 已經有 job 佔位了」的唯一判準。單筆 `enqueue` 與批次 `enqueue_many`
+    # **必須共用這一份定義**——兩條入口各自抄一份的話，去重規則會悄悄分岔，
+    # 同一個輸入從不同入口得到不同結果，而且分岔本身不會有任何訊號。
+    _ACTIVE_STATUSES = ("queued", "downloading", "paused", "completed")
+
+    def enqueue_many(
+        self,
+        items: List[Dict[str, Any]],
+        autostart: bool = True
+    ) -> List[DownloadJob]:
+        """批次入列：N 筆任務只寫一次 `download_jobs.json`。
+
+        與逐筆呼叫 `enqueue()` 的差異**只在成本，不在語意**：去重規則、`autostart`
+        行為、回傳的 job 物件都相同。
+
+        **成本差異（本方法存在的唯一理由，BR-20260820_210000 F 節）**——
+        `enqueue()` 每一筆都做兩件 O(N) 的事：
+          (a) `src:247` 線性掃 `self.jobs` 找重複
+          (b) `src:262` 整份重寫 JSON（**全部** job，不是新增那筆）
+        逐筆呼叫 N 次 ⇒ 掃描 O(N²) + 寫入 O(N²)。**兩個都是**，修一個不夠。
+        本方法把去重索引建一次、檔案寫一次，兩者同時降為 O(N)。
+
+        **存檔次數是可解釋的確切數字，不是「變少了」**：
+          - 有建立任何新 job → **恰好 1 次**
+          - 一筆都沒建立（全部重複／空清單）→ **0 次**
+        後者與 `enqueue()` 命中重複時提前返回、同樣不存檔的行為一致。
+        「修好了」與「這條路徑根本沒被走到」都會讓次數變小，所以測試鎖的是
+        確切數字**加上**「job 真的建出來了」的正面證據，不是只鎖次數。
+
+        `items` 每筆是 dict，key 與 `enqueue()` 的參數同名。**缺 `md5` 一律拋
+        `ValueError`**，不靜默略過——略過會讓「送 120 筆回 119 筆」沒有任何訊號。
+        """
+        # 去重索引建一次，而不是每筆掃一次 `self.jobs`——這是 O(N²) 的另一半，
+        # 只修存檔次數的話它會留在原地。
+        existing_by_md5: Dict[str, DownloadJob] = {}
+        for j in self.jobs.values():
+            if j.status in self._ACTIVE_STATUSES:
+                existing_by_md5.setdefault(j.md5, j)
+
+        results: List[DownloadJob] = []
+        created: List[DownloadJob] = []
+
+        for idx, item in enumerate(items):
+            md5 = str(item.get("md5") or "").lower()
+            if not md5:
+                raise ValueError(
+                    f"enqueue_many: items[{idx}] 缺少 md5，無法建立下載任務。"
+                    "（靜默略過會讓「送 N 筆回 N-1 筆」沒有任何訊號）"
+                )
+
+            existing = existing_by_md5.get(md5)
+            if existing is not None:
+                results.append(existing)
+                continue
+
+            job = DownloadJob(
+                job_id=f"job_{uuid.uuid4().hex[:12]}",
+                md5=md5,
+                title=item.get("title"),
+                authors=item.get("authors"),
+                extension=item.get("extension") or "pdf",
+                mirror_links=item.get("mirror_links"),
+                publication_year=item.get("publication_year"),
+            )
+            self.jobs[job.job_id] = job
+            # 同一批次內的重複也要擋：同一個 md5 在一個 request 裡出現兩次時，
+            # 只查「進入本方法前的快照」會漏掉——逐筆 enqueue() 沒有這個破口，
+            # 因為前一筆已經寫進 self.jobs 了。
+            existing_by_md5[md5] = job
+            created.append(job)
+            results.append(job)
+
+        if created:
+            # 存檔一次。順序與 `enqueue()` 逐筆時相同：先落盤、再入列、最後啟動。
+            self._save_jobs_to_disk()
+            for job in created:
+                self.queue.put_nowait(job)
+            if autostart:
+                self.start()
+
+        return results
+
     def enqueue(
         self,
         md5: str,
@@ -243,27 +325,21 @@ class DownloadWorker:
 
         兩者的差異必須可觀察，否則「參數生效」與「參數被忽略」會共用同一個
         輸出；`tests/test_download_worker_enqueue_autostart.py` 鎖住這兩個方向。
-        """
-        for j in self.jobs.values():
-            if j.md5 == md5.lower() and j.status in ("queued", "downloading", "paused", "completed"):
-                return j
 
-        job_id = f"job_{uuid.uuid4().hex[:12]}"
-        job = DownloadJob(
-            job_id=job_id,
-            md5=md5,
-            title=title,
-            authors=authors,
-            extension=extension,
-            mirror_links=mirror_links,
-            publication_year=publication_year
-        )
-        self.jobs[job_id] = job
-        self._save_jobs_to_disk()
-        self.queue.put_nowait(job)
-        if autostart:
-            self.start()
-        return job
+        實作上這是 `enqueue_many([...一筆...])` 的單筆包裝——**刻意不另抄一份**
+        去重與存檔邏輯：兩份會分岔，而分岔不會有訊號。
+        """
+        return self.enqueue_many(
+            [{
+                "md5": md5,
+                "title": title,
+                "authors": authors,
+                "extension": extension,
+                "mirror_links": mirror_links,
+                "publication_year": publication_year,
+            }],
+            autostart=autostart,
+        )[0]
 
     def start_job(self, job_id: str) -> Optional[DownloadJob]:
         """主動啟動特定任務的下載（立即執行）。"""
