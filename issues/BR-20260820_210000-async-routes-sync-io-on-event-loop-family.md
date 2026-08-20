@@ -103,7 +103,14 @@ validator.py:65 / :88  BeautifulSoup 解析
 
 ## E. worker 側 —— 下載迴圈每 64KB 一次同步寫
 
-`app/crawler/download_worker.py:382-386`：
+> **⚠ 行號已更正（2026-08-20，dispatcher 對工作樹重驗）**：本節原寫 `:382-386` / `:418` / `:302` / `:205` / `:411`，
+> 全部漂移——BR-230000 的 stop 生命週期修復與 F 節的 `enqueue_many` 陸續把檔案撐長。
+> 現況：`f.write(chunk)` 在 **src:707**、`process_file` 在 **src:739**、`part_file.replace` 在 **src:732**、
+> `_save_jobs_to_disk()` 共 **9 個呼叫點**（src:241/319/379/409/440/467/528/578/623）。
+> 控制組：`grep -c enqueue_many` = 5 rc=0（證明 grep 讀得到檔），bogus pattern rc=1。
+> **派工前必須再重驗一次**——這張 BR 是快照，而這個檔還在被改。
+
+`app/crawler/download_worker.py` **src:705-707**（原 `:382-386`）：
 
 ```python
 with open(part_file, mode) as f:
@@ -120,11 +127,25 @@ with open(part_file, mode) as f:
 其餘較輕的：`:302` / `:205` `_save_jobs_to_disk()` 同步 JSON 全檔重寫；`:411` `part_file.replace()` 跨裝置時
 退化為整檔複製。
 
+### 併入項（2026-08-20 使用者裁示）
+
+**`delete_download_job` 的 `part_file.unlink()`（現況 `download_worker.py` src:462，原記於 F 節）併入本節一起處理。**
+
+handler K 在 C/D/F 包標出、未動：數百 MB 的 `.part` 檔在 NFS（`timeo=600,hard`）上 unlink 會佔住 loop 執行緒，
+全站請求一起延後。它與本節其餘各項共用同一個機制（worker 側同步檔案 I/O 落在 NFS）與同一個診斷訊號來源。
+
+使用者裁示合併的理由（dispatcher 轉述）：分開修會讓 BR-160000 觀察期多一個變因。
+
+**本節（含併入項）仍暫緩派工**，等 BR-160000 觀察期跑完——修 E 節會抹掉那張 BR 的第三候選機制的診斷訊號。
+這是使用者已拍板的取捨，不是漏派。
+
 ## F. 較輕但成本隨 N 成長的
 
 - `crawler_routes.py:130 enqueue_batch_download` — 迴圈 N 次 `enqueue()`，每次 `_save_jobs_to_disk()` 全檔
   JSON 重寫 ⇒ **O(N²) bytes**，全在 loop 上。
-- `crawler_routes.py:206 delete_download_job` — `:243 part_file.unlink()` 可能是數百 MB 的 `.part`。
+- ~~`crawler_routes.py:206 delete_download_job` — `:243 part_file.unlink()`~~
+  **→ 已於 2026-08-20 依使用者裁示併入 E 節**（見 E 節末的「併入項」）。理由：它與 E 節同屬
+  worker 側檔案 I/O、同一個 NFS 落點、同一批 BR-160000 診斷訊號，分開修會讓觀察期多一個變因。
 - `settings_routes.py:110 list_dispatched_issues` — 雖是 sync `def`（不阻塞 loop），但 `:116 glob + stat`、
   `:119 read_text` 逐檔讀 `issues/`，佔用 anyio threadpool 名額（預設 40），在 NFS 上尤其。
 
