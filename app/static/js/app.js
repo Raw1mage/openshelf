@@ -715,7 +715,7 @@ function renderLocalBookCard(item) {
             <button class="book-dropdown-item" onclick="openReader('${item.work_id}'); closeAllBookDropdowns();">
               <span>📖</span> <span>線上閱讀</span>
             </button>
-            <button class="book-dropdown-item" onclick="openQuickCollection('${item.work_id}', '${escapeHtml(item.title)}'); closeAllBookDropdowns();">
+              <button class="book-dropdown-item" onclick="openQuickCollection('${item.work_id}', '${escapeJsArg(item.title)}'); closeAllBookDropdowns();">
               <span>⭐</span> <span>加入個人書單</span>
             </button>
             <a class="book-dropdown-item" href="${BASE_PATH}/api/files/${item.work_id}/raw" download title="下載原檔至本地" onclick="closeAllBookDropdowns();">
@@ -794,7 +794,7 @@ function buildLiveCardParts(item) {
       <button class="book-dropdown-item" onclick="openReader('${targetWorkId}'); closeAllBookDropdowns();">
         <span>📖</span> <span>線上閱讀</span>
       </button>
-      <button class="book-dropdown-item" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(item.title)}'); closeAllBookDropdowns();">
+      <button class="book-dropdown-item" onclick="openQuickCollection('${targetWorkId}', '${escapeJsArg(item.title)}'); closeAllBookDropdowns();">
         <span>⭐</span> <span>加入個人書單</span>
       </button>
       <a class="book-dropdown-item" href="${BASE_PATH}/api/files/${targetWorkId}/raw" download title="下載原檔至本地" onclick="closeAllBookDropdowns();">
@@ -1393,6 +1393,23 @@ function openReader(workId) {
 function escapeHtml(str) {
   if (!str) return "";
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 用於 inline onclick 內的「JS 單引號字串」參數，例如 onclick="fn('${escapeJsArg(t)}')"。
+// escapeHtml 不足以勝任：HTML 屬性會先被解碼再交給 JS parser，所以把 ' 轉成 &#39;
+// 解碼後仍是 '，照樣截斷字串（實測："Silberschatz's ..." 觸發 SyntaxError，選單完全打不開）。
+// 正解是先做 JS 字面值跳脫，再做 HTML 屬性跳脫——順序不可顛倒。
+function escapeJsArg(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function initQueueModalDragAndResize() {
@@ -2094,6 +2111,8 @@ async function saveSingleBookToLocalDisk(workId, title, format) {
 let currentActiveCollectionId = null;
 let quickTargetWorkId = null;
 let quickTargetWorkTitle = null;
+// 遞增序號：使用者連續點不同書籍時，舊的載入回應不得寫進新開的選單
+let quickCollectionReqId = 0;
 
 async function openCollectionsModal(targetColId = null) {
   const modal = document.getElementById("collectionsModal");
@@ -2217,7 +2236,7 @@ function renderChromeFolderDetail(folderNode) {
           </div>
         <div class="book-actions">
             <a class="btn btn-icon btn-primary" href="${it.url}" target="_blank" title="立即閱讀">👁️</a>
-            <button class="btn btn-icon btn-outline" onclick="removeChromeBookmark('${it.id}', '${escapeHtml(it.title)}', event)" title="刪除書籤" style="color: #ef4444;">❌</button>
+            <button class="btn btn-icon btn-outline" onclick="removeChromeBookmark('${it.id}', '${escapeJsArg(it.title)}', event)" title="刪除書籤" style="color: #ef4444;">❌</button>
           </div>
         </div>
       `).join("")}
@@ -2270,8 +2289,8 @@ async function loadCollectionDetail(collectionId) {
           </div>
         </div>
         <div style="display: flex; gap: 0.5rem;">
-          <button class="btn btn-outline" onclick="renameCollectionPrompt('${col.collection_id}', '${escapeHtml(col.name)}', event)" title="重命名書單" style="padding: 0.35rem 0.65rem;">✏️</button>
-          ${!isSystem ? `<button class="btn btn-outline" onclick="deleteCollectionPrompt('${col.collection_id}', '${escapeHtml(col.name)}', event)" title="刪除此書單" style="padding: 0.35rem 0.65rem; color: #ef4444;">🗑️</button>` : ''}
+          <button class="btn btn-outline" onclick="renameCollectionPrompt('${col.collection_id}', '${escapeJsArg(col.name)}', event)" title="重命名書單" style="padding: 0.35rem 0.65rem;">✏️</button>
+          ${!isSystem ? `<button class="btn btn-outline" onclick="deleteCollectionPrompt('${col.collection_id}', '${escapeJsArg(col.name)}', event)" title="刪除此書單" style="padding: 0.35rem 0.65rem; color: #ef4444;">🗑️</button>` : ''}
         </div>
       </div>
 
@@ -2294,7 +2313,7 @@ async function loadCollectionDetail(collectionId) {
             </div>
             <div class="book-actions">
               <button class="btn btn-icon btn-primary" onclick="openReader('${it.work_id}')" title="立即閱讀">📖</button>
-              <button class="btn btn-icon btn-outline" onclick="removeBookFromCollection('${col.collection_id}', '${it.work_id}', '${escapeHtml(it.work.title)}', event)" title="從書單移除" style="color: #ef4444;">❌</button>
+              <button class="btn btn-icon btn-outline" onclick="removeBookFromCollection('${col.collection_id}', '${it.work_id}', '${escapeJsArg(it.work.title)}', event)" title="從書單移除" style="color: #ef4444;">❌</button>
             </div>
           </div>
         `).join("")}
@@ -2706,13 +2725,30 @@ async function openQuickCollection(workId, title) {
   const modal = document.getElementById("quickCollectionModal");
   modal.classList.add("active");
   const listEl = document.getElementById("quickCollectionList");
-  listEl.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 1rem;">載入書單中...</p>`;
+
+  // 競態守門：使用者連續點不同書籍時，舊的回應不得寫進新的選單
+  const reqId = ++quickCollectionReqId;
+  const isStale = () => reqId !== quickCollectionReqId;
+
+  // 等待態必須可見且會隨時間演進——不得與「空書單」、「載入失敗」共用同一個輸出
+  listEl.innerHTML = `<p data-quick-state="loading" style="color: var(--text-muted); text-align: center; padding: 1rem;">載入書單中…</p>`;
+  const tLoad = performance.now();
+  const slowTimer = setInterval(() => {
+    if (isStale()) return clearInterval(slowTimer);
+    const el = listEl.querySelector('[data-quick-state="loading"]');
+    if (!el) return clearInterval(slowTimer);
+    const secs = Math.round((performance.now() - tLoad) / 1000);
+    el.innerHTML = `載入書單中…<br><span style="font-size: 0.82rem;">已等待 ${secs} 秒，後端回應較慢</span>`;
+  }, 1000);
+  const stopSlowTimer = () => clearInterval(slowTimer);
 
   // 1. 若 Chrome 擴充套件已連線，讀取 Chrome 資料夾
   if (isChromeExtensionAvailable) {
     try {
       const extRes = await callExtension("GET_TREE");
+      if (isStale()) { stopSlowTimer(); return; }
       if (extRes.success && extRes.data) {
+        stopSlowTimer();
         const rootTree = extRes.data;
         const folders = (rootTree.children || []).filter(node => !node.url);
         const workUrl = `${window.location.origin}${BASE_PATH}/reader?work_id=${workId}`;
@@ -2735,6 +2771,7 @@ async function openQuickCollection(workId, title) {
       console.warn("讀取 Chrome 資料夾失敗，切換後端模式:", e);
     }
   }
+  if (isStale()) { stopSlowTimer(); return; }
 
   // 2. 預設後端/本地資料庫模式
   try {
@@ -2743,8 +2780,19 @@ async function openQuickCollection(workId, title) {
       fetch(`${BASE_PATH}/api/collections/work/${workId}/status`)
     ]);
 
+    if (!colsRes.ok) throw new Error(`書單清單 HTTP ${colsRes.status}`);
+    if (!statusRes.ok) throw new Error(`收藏狀態 HTTP ${statusRes.status}`);
+
     const collections = await colsRes.json();
     const joinedIds = new Set(await statusRes.json());
+    if (isStale()) { stopSlowTimer(); return; }
+    stopSlowTimer();
+
+    // 空書單（缺席態）必須與「還在載入」、「載入失敗」在畫面上可區分
+    if (!Array.isArray(collections) || collections.length === 0) {
+      listEl.innerHTML = `<p data-quick-state="empty" style="color: var(--text-muted); text-align: center; padding: 1rem;">📖 尚未建立任何個人書單<br><span style="font-size: 0.82rem;">可到「📚 個人書單」建立新書單後再回來收藏</span></p>`;
+      return;
+    }
 
     listEl.innerHTML = collections.map(c => {
       const isChecked = joinedIds.has(c.collection_id);
@@ -2760,7 +2808,9 @@ async function openQuickCollection(workId, title) {
     }).join("");
   } catch (err) {
     console.error("載入快速收藏失敗:", err);
-    listEl.innerHTML = `<p style="color: #ef4444;">載入失敗</p>`;
+    if (isStale()) { stopSlowTimer(); return; }
+    stopSlowTimer();
+    listEl.innerHTML = `<p data-quick-state="error" style="color: #ef4444; text-align: center; padding: 1rem;">⚠️ 載入書單失敗<br><span style="font-size: 0.82rem;">${escapeHtml(err && err.message ? err.message : String(err))}</span></p>`;
   }
 }
 
@@ -2936,7 +2986,7 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs) {
                 ⋯
               </button>
               <div class="shelf-dropdown-menu">
-                <button class="shelf-dropdown-item" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(w.title)}'); closeAllDropdowns();">
+                <button class="shelf-dropdown-item" onclick="openQuickCollection('${targetWorkId}', '${escapeJsArg(w.title)}'); closeAllDropdowns();">
                   <span>⭐</span>
                   <span>加入個人書單</span>
                 </button>
