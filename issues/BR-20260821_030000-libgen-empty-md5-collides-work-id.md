@@ -1,6 +1,6 @@
 # BR-20260821_030000 — 空 md5 的公網項目全部共用同一個 work_id `libgen_`，且互撞在前端與後端都無聲
 
-- **Status**: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`3597e2e`），但四格殘留未消除，故不進 `closed/`
+- **Status**: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`3597e2e`）；四格殘留已於 2026-08-21 銷三格，但**兩格仍開著**（is 適配器無真實樣本、丟棄留痕在生產路徑不可觀察），故不進 `closed/`
 - **Fixed-by**: `3597e2e`（handler `ses_fdfe0c00fffea02pCkU7S4EE3x`，dispatcher 驗收 2026-08-21）
 
 ## 處置（使用者裁示）
@@ -21,17 +21,106 @@
 (c) 搜尋本來就沒結果。**改動前 (a) 不存在，改動後 (a) 變成常態路徑**，於是靜默地併進
 另外兩個。log 讓 (a) 可辨識，也讓零樣本的 is 適配器日後有數字可看。
 
-## 殘留（PARTIAL 的理由，四格皆未消除）
+## 殘留狀態（四格 → 2026-08-21 銷三格，**兩格仍開著**）
 
-1. **「使用者現在搜尋看不到那些書了」只有單元層證據，無線上實測**。且依現有母體
-   （50/50 全含 md5）也**造不出**會被丟棄的真實項目——要驗證只能餵構造的 HTML，那就回到單元層。
-2. **is 適配器的 fixture 是依 `:411`/`:428` 程式碼結構自行構造，非真實 HTML**。若真實 is 鏡像
-   的第 10 欄以後結構與構造的不同，測試會通過但線上行為未知。
-3. **`validator.py:115/138` 的連帶影響只有推論**。它用
-   `len(records) > 0 and any(r.get("md5") for r in records)` 判定鏡像是否 verified。
-   原本「全部 row 無 md5」的鏡像拿到 `records 非空但 any() 為 False` → step 4；
-   現在拿到 `records 為空` → 同樣 step 4。**終點相同，但走的分支不同**——未實測。
-4. **未查快取層**是否有序列化過的搜尋結果會繞過 parser 供給既有項目。
+> 以下每一格的證據 dispatcher 都獨立重做過，非採信 handler 自報。
+
+**① 無線上實測 — 已消除（且推翻了 dispatcher 自己的預判）**
+
+dispatcher 在派工單寫「現在造不出會被丟棄的真實項目，這格很可能做不到」。**做得到。**
+handler 沒用 `page.route` 騙前端，而是把**上游鏡像**換成受控假鏡像：
+docker 私網 + 假鏡像容器（4 row：2 有 md5 / 2 無），真鏡像全部 `enabled=False`
+（`ACTIVE_COUNT=1` 確保絕不外連）。**parser / route / DB / 瀏覽器全是真的，只有 HTML 是構造的。**
+
+fixture 自我驗證：BeautifulSoup 數出 `DATA_ROWS=4 cols=9`，2 筆 href 含 32-hex /
+2 筆 `file.php?id=`——沒有它，「被新閘丟棄」與「在欄數守衛就被丟掉」共用同一個輸出。
+
+```
+                    HTTP  total  KEEP  DROP  work_id相異  字面 "libgen_" 筆數
+FIXED   (新閘)      200    2      2     0     2 of 2       0
+MUTATED (舊寬鬆閘)  200    4      2     2     3 of 4       2   ← 互撞重現
+```
+
+瀏覽器層（真 chromium 打真頁面，非注入）：
+FIXED 頁面 `btn-dl-` id 相異 2/2、互撞 0 個；MUTATED 相異 3/4、**互撞 2 個（兩個裸 `btn-dl-`）**。
+本 BR 症狀表列的 `app.js:864` DOM id 互撞在瀏覽器裡被直接看見，修復後歸零。
+mutation 跑在 `app/` 的 scratch 副本上（`tokenize` 剥掉 COMMENT/STRING 後計數），**repo 內 `app/` 零改動**。
+
+⚠ 這格證明的是「**parser 遇到無 md5 row 時全鏈會怎樣**」，**不是**「真實鏡像現在會不會產出這種 row」。
+後者依實測母體（50/50 全含 md5）觸發機率仍為 0。
+
+**② is 適配器無真實樣本 — 仍開著（已證明目前做不到，擋在網路不在程式）**
+
+```
+libgen.is  HTTP=000  CURL_RC=28   DNS rc=0 -> 193.218.118.42
+libgen.rs  HTTP=000  CURL_RC=28   DNS rc=0 -> 193.218.118.42
+libgen.st  HTTP=000  CURL_RC=28   DNS rc=0 -> 193.218.118.42
+CONTROL libgen.li  HTTP=200  CURL_RC=0   DNS rc=0 -> 179.43.167.164
+```
+
+三者 DNS **都解得到**且指向同一 IP ⇒ **是網路層不可達，不是 DNS NXDOMAIN**（兩種成因不得混為一談）。
+控制組 libgen.li 通 ⇒ 網路本身正常，探針有鑑別力。
+
+順帶確認一件事：dispatcher 先前說「`dao.py:941` 的 `verified` 過濾是可翻轉的狀態，
+不是結構性死路」——**成立**，但翻轉它也拿不到樣本，因為主機根本連不上。
+⇒ `_parse_libgen_is_html` 的 fixture **仍然是依程式碼結構自行構造的**。這格**未被消除**，
+只是從「未做」換成「**已證明目前無法消除**」。哪天鏡像回來了要重新驗。
+
+**③ `validator.py:115/138` 連帶影響 — 已消除（分支確實不同，終點確實相同）**
+
+架第二台假鏡像（3 row 全無 md5，fixture 自我驗證 `ROWS_WITH_MD5=0`），兩容器各打 `/validate`：
+
+```
+                    validation_status      adapter   sample_records_count
+FIXED   (新閘)      incompatible_layout    unknown   0
+MUTATED (舊寬鬆閘)  incompatible_layout    unknown   0     ← 終點相同 ✓
+CONTROL 有 md5 鏡像   verified/libgen_li               2 筆 / 4 筆  ← 有鑑別力
+```
+
+分支不同的直接證據（容器內直接呼叫 parser，非推論）：
+```
+FIXED  : len_records=0  any_md5=False  gate=False  → 「len()>0 為 False 短路」
+MUTATED: len_records=3  any_md5=False  gate=False  → 「len()>0 為 True，由 any() 決定」
+```
+⇒ handler 的推論**正確**（終點同為 step 4 → `incompatible_layout`），且兩條短路分支都真的被走過一次。
+
+**④ 未查快取層 — 已消除（沒有快取層）**
+
+```
+libgen_live.py + crawler_routes.py 內 'cache'          rc=1（0 行）
+app/ 全域 'lru_cache|TTLCache|_cache'                 rc=1（0 檔）
+CONTROL  app/ 全域 'def '                              rc=0（20 檔）
+```
+控制組有鑑別力 ⇒ 那兩個 0 不是 pattern 寫錯。**沒有快取層，parser 是搜尋結果的唯一來源。**
+
+## 新發現的揭露缺陷（handler 依判準②回報，dispatcher 獨立坐實）
+
+**上方「丟棄留痕」那格的 `log.debug` 在生產路徑上不可觀察——它的效果目前是 0。**
+
+```
+容器內實測（docker exec）：
+  app.crawler.libgen_live  EFFECTIVE_LEVEL = 30 WARNING
+  ROOT_LEVEL = WARNING
+  DEBUG_ENABLED = False   INFO_ENABLED = False   WARNING_ENABLED = True
+
+成因：
+  grep -rn 'basicConfig|dictConfig|setLevel' app/    rc=1（0 行）
+  CONTROL grep -rn 'getLogger' app/                  rc=0（12 行）  ← 有鑑別力
+  ⇒ app 全域沒有任何 logging 設定，root logger 停在預設 WARNING。
+  uvicorn 的 --log-level 只設它自己的 logger，不動 root（handler 實測過，加了仍為 0）。
+```
+
+**這是本 BR 自己的修復裡長出的同一個病。** 上方「丟棄留痕」節寫的理由是：
+否則 (a) 這批 row 全無 md5、(b) parser 壞了、(c) 搜尋本來沒結果 共用同一個輸出。
+而那個留痕在生產環境**發不出來**，三態仍然共用同一個輸出。
+
+兩條修法選項（**未裁決**，都要動 production 檔）：
+- **(a)** `log.debug` → `log.info`：改動最小，但 root 仍在 WARNING ⇒ **仍然發不出來**。
+  除非同時降 root level，否則這個選項是無效的——這一格必須實測，不得推論。
+- **(b)** `app/main.py` 加一次 `logging.basicConfig(level=...)`：真的會發出來，
+  但**影響全 app 的 log 量**（目前 12 處 `getLogger`），是全局性變更。
+
+這也是 BR-030000 **不能進 `closed/`** 的第二個理由。
 
 ## 已驗收的部分（dispatcher 獨立重做，非採信 handler 自報）
 

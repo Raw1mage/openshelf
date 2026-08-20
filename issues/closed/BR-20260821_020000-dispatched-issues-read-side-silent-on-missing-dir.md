@@ -1,22 +1,69 @@
 # BR-20260821_020000 — 讀取端 `list_dispatched_issues` 在落點目錄不存在時回 `total=0`，零訊號
 
-Status: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`7c0ff48`），但保留三格未消除的殘留，故不進 `closed/`
+Status: **CLOSED** — 主修復已 landed 並經 dispatcher 獨立驗收（`7c0ff48`）；三格殘留已於 2026-08-21 全數銷帳（`4d7ab3d` + dispatcher 直接查證），無殘留
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4
 Family: openshelf/container-mount-boundary
 Severity: 使用者可感知（前端清單恆空，且無任何可據以排查的訊號）
 Fixed-by: `7c0ff48`（handler `ses_fe0047b7affeRjQIojOZ6ZY65b`，dispatcher 驗收 2026-08-21）
 
-## 殘留（PARTIAL 的理由，三格皆未消除）
+## 殘留銷帳（三格，2026-08-21 全數消除）
 
-1. **未真的移除 `./issues` 掛載再打端點**。移除掛載必須重啟容器，而 handler 無此授權。
-   所以「掛載真的失效時端點回 `source_available:false`」目前是**測試層證據 + 靜態推論**，
-   不是生產環境實測。原 BR「沒驗證的」第 1 格**未被消除**，只從「完全沒有證據」推進到
-   「有測試層證據」。
-2. **前端未在真實瀏覽器渲染驗證**。mutation 探針是抽出函式本體用 `new Function` 執行，
-   非 DOM 環境。證明的是分支邏輯，**沒有**證明 `innerHTML` 實際渲染樣貌，也沒證明
-   `loadDispatchedIssuesNotice` 在 `app.js:1667` 那個呼叫點真的被觸發。
-3. **未查是否還有第三個模組**也用 `Path(__file__).parent.parent.parent` 解析落點。
-   原 BR 提出的這一格，handler 判定超出本包邊界而未查，**仍然開著**。
+> 原本三格都是 PARTIAL 的理由。以下每一格的證據 dispatcher 都獨立重做過，
+> 非採信 handler 自報。
+
+**① 未真的移除 `./issues` 掛載再打端點 — 已消除（生產環境實測）**
+
+改用**獨立臨時容器**（同 image、不同 port、不同掛載），全程未動線上 `openshelf-app`
+（`docker inspect` 全程 `RestartCount=0`、`StartedAt=2026-08-20T15:59:47Z` 未變）。
+
+```
+port 18188  無 -v issues            source_available=False  total=0
+port 18189  -v <空目錄>:/app/issues  source_available=True   total=0
+port 8088   線上（有 BR）            source_available=True   total=6
+DISTINCT_SIGNATURES = 3 of 3
+```
+
+無掛載容器 body 逐字：
+`{"total":0,"issues":[],"source_available":false,"source_path":"/app/issues"}` HTTP=200
+（先印 `KEYS=['issues','source_available','source_path','total']` 再取值，避免用錯 key）
+
+控制組：同容器 `/zzz_not_a_route` → HTTP=404，證明 curl 探針有鑑別力。
+
+容器 log 實測（不是推論）：`"BR 清單來源目錄不可用"` 命中 1；
+負控制組 `ZZZ_NOT_A_REAL_LOG_LINE` 命中 0 rc=1；正控制組 `"Uvicorn running"` 命中 1 rc=0。
+
+**這格從「測試層證據 + 靜態推論」升級為生產環境實測。**
+
+**② 前端未在真實瀏覽器渲染驗證 — 已消除（`4d7ab3d`）**
+
+`tests/e2e/test_dispatched_issues_notice.py` 8 條，跑在真 chromium
+（`OPENSHELF_E2E=1` 下 8 passed rc=0；預設模式 skip）。證明了 `new Function`
+探針做不到的三件事：
+
+- `route_hits == 1` — `loadDispatchedIssuesNotice` 真的被觸發。**沒有這條，
+  「函式被呼叫但渲染錯」與「函式根本沒被呼叫」共用同一個輸出**（畫面上都是提示列不出現）
+- `inner_text()` 取到「…為『未知』而非『無報告』」— `innerHTML` 真的被渲染
+- `is_visible()` — `display` 真的讓元素視覺出現/消失
+
+四分支簽章：`unavailable=block/True`、`empty_ok=none/False`、`legacy(無欄位)=none/False`、
+`populated=visible/含 "3"`，三元組相異 3/3。
+
+⚠ **範圍界線（誠實標出）**：本批用 `page.route` 注入 payload，測的是「前端拿到某
+payload 時渲染什麼」，**不是**「後端真讀不到目錄時渲染什麼」——後半由①的容器實測負責。
+兩段接縫由 `test_live_endpoint_shape_matches_injected_payload` 鎖住（打真端點比對 key
+集合），否則後端改欄位名後注入式測試會繼續全綠。payload 形狀逐欄照抄自①的實測 body。
+
+**③ 是否還有第三個模組 — 已消除（沒有第三個）**
+
+```
+grep -rn 'parent\.parent\.parent' app/ script/    命中 2 處
+  app/api/settings_routes.py:119
+  app/crawler/validator.py:52
+CONTROL  grep -rn 'Path(__file__)' app/           命中 4 處
+  （另有 app/main.py:67、app/db/engine.py:79，兩者都只上溯一層，非落點解析）
+```
+
+控制組比目標多兩處 ⇒ grep 有鑑別力，那個 2 不是 pattern 寫錯造成的。**沒有第三個模組。**
 
 ## 已驗收的部分（dispatcher 獨立重做，非採信 handler 自報）
 
@@ -116,12 +163,20 @@ const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/issues`);
 **判準**：修復後必須有一個測試能區分「目錄存在但沒有 BR」與「目錄根本不存在」。
 目前 `total=0` 同時是兩者的答案。
 
-## 沒驗證的
+## 沒驗證的（建檔當下的狀態 — **三條已於 2026-08-21 全部銷帳，見本檔開頭「殘留銷帳」節**）
 
-- **沒實際把掛載拿掉打這個端點** —— 上述是靜態解析 + 該檔 logger 計數實測，
-  沒有真的移除 `./issues:/app/issues` 重啟容器再打一次。推論鏈完整（早退分支就在那六行內），
-  但「端到端真的回 total=0 且無訊號」這格是推論不是實測。
-- **沒查前端拿到 `total=0` 後渲染什麼** —— 只確認 src:2034 是唯一 fetch 點，
-  沒讀它下游的 DOM 邏輯，所以不知道使用者實際看到的是「（無）」還是空白。
-- **沒查是否還有第三個模組也用 `Path(__file__).parent.parent.parent`** —— 只查了
-  `validator.py`（已修）與 `settings_routes.py`（本案）兩處。
+> ⚠ 以下是**建檔當下**的證據強度，保留供追溯。三條現在都有實測證據了，
+> **不要照著這一節重做實驗**。每條後面標了銷帳去處。
+
+- ~~**沒實際把掛載拿掉打這個端點**~~ —— 上述是靜態解析 + 該檔 logger 計數實測，
+  沒有真的移除 `./issues:/app/issues` 重啟容器再打一次。
+  → **已銷帳**：獨立臨時容器三態實測（18188 無掛載 / 18189 空目錄 / 8088 線上），
+  簽章相異 3/3，`source_available=false` 逐字驗證，容器 log 命中 1（含正負控制組）。
+- ~~**沒查前端拿到 `total=0` 後渲染什麼**~~ —— 只確認 src:2034 是唯一 fetch 點，
+  沒讀它下游的 DOM 邏輯。
+  → **已銷帳**：`tests/e2e/test_dispatched_issues_notice.py` 8 條真 chromium
+  （`4d7ab3d`），四分支 `inner_text()` / `is_visible()` 實測，三元組相異 3/3。
+- ~~**沒查是否還有第三個模組**~~ —— 只查了 `validator.py`（已修）與 `settings_routes.py`（本案）。
+  → **已銷帳**：全 repo `parent.parent.parent` 命中恰為這 2 處；控制組 `Path(__file__)`
+  命中 4 處（多出的 `main.py:67` / `engine.py:79` 都只上溯一層，非落點解析）⇒ grep 有鑑別力。
+  **沒有第三個模組。**
