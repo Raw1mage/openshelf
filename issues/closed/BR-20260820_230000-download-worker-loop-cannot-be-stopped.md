@@ -1,6 +1,7 @@
 # BR-20260820_230000 — DownloadWorker 背景迴圈無法被關閉：吞取消 + 無 shutdown 路徑
 
-Status: OPEN
+Status: **CLOSED** — 六條判準全數達成。修復 `19781d4`，dispatcher 獨立驗收（四組 mutation + 判準 6 容器實測）。
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: download-worker-lifecycle
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
@@ -167,6 +168,114 @@ DownloadWorker() 單例    app/api/crawler_routes.py:25
 ---
 
 ## 沒驗證的
+
+---
+
+## 處置紀錄
+
+**修復 `19781d4`** — handler `ses_fe1449648ffeVlh7BM0VFmG40q`，
+dispatcher `ses_fe7b5cbadffeSlxj0dv1Z740O4` 獨立驗收。
+
+### 六條判準
+
+```
+1 修復前失敗且以斷言呈現       ✅  mutation C：4 failed rc=1
+                                   CONTROL 'Failed:'=4 rc=0 / 'AssertionError'=0 rc=1
+                                   / 假 pattern=0 rc=1；rc=1 非 124
+2 pause 語意未被破壞           ✅  mutation D（一律穿透）死的正是
+                                   test_pause_job_marks_paused_and_keeps_loop_running
+                                   斷言證據：Task cancelled ... _process_queue（迴圈陪葬）
+3 mutation 鎖得住              ⚠  見下方「判準 3 的缺口」
+4 _hard_cancel 可拿掉          ✅  grep rc=1（消失），CONTROL _shutdown=5 rc=0
+                                   autostart 測試 7 passed rc=0
+5 pytest 不下降                ✅  183 passed rc=0
+6 容器優雅關閉                 ✅  見下方「判準 6」
+```
+
+### 判準 6（dispatcher 執行，handler 無重啟權限）
+
+容器內起同構 uvicorn（真 lifespan + 真 `worker.stop()`，假 blocking download，
+不碰使用者書庫、不打公網），對它發 SIGTERM：
+
+```
+修復後   SIGTERM_TO_EXIT 0.122s   STOP_RETURNED=True    STOP_MS=1.0
+缺陷態   SIGTERM_TO_EXIT 5.123s   STOP_RETURNED=False   STOP_MS=5005.0
+         + log.warning「仍有 1 個 task 存活，關閉流程未能乾淨收尾」
+
+兩者     JOB_IN_FLIGHT=True     ← 關鍵：證據 ② 明說空佇列會白白通過
+         EXIT_CODE=-15（SIGTERM）非 -9，未被 SIGKILL
+         CLEANED True（探針殘留已清，容器內 test -e rc=1，
+                       CONTROL test -e /app/app/main.py rc=0）
+```
+
+**42 倍差異，且 `stop()` 的 bool 兩態真的可分。** 缺陷態是在探針內把
+`_process_queue` 換成「無守衛 + 一律吞取消」的複製品，**不動磁碟上的
+production 檔案**（線上是 bind-mount + `--reload`，改檔會立刻波及使用者）。
+
+另量空佇列基線：`docker compose stop` 2.34s、exit_code=0、
+log 有 `Application shutdown complete`。**但那格如證據 ② 所述沒有鑑別力**，
+不作為判準 6 的依據。
+
+### 判準 3 的缺口（dispatcher 四組 mutation 的發現）
+
+```
+A 只拿掉 while not self._stopping，保留兩處 re-raise    9 passed rc=0
+  CONTROL 守衛 count=0 rc=1（突變落地）
+  CONTROL if self._stopping count=2 rc=0（只動守衛）
+B 只拿掉 _process_queue 的 re-raise，保留守衛           1 failed rc=1
+  AssertionError: 'paused' != 'queued'  ← 死的是狀態語意
+C 兩處全還原（原始缺陷態）                              4 failed rc=1
+D 一律穿透（拿掉 pause 分支）                           1 failed rc=1
+每組還原後 diff rc=0、9 passed rc=0
+```
+
+**A 全過 ⇒ 沒有任何測試單獨鎖住迴圈守衛。** B 與 C 的差集顯示 re-raise 才是
+必要條件；守衛在有 re-raise 的前提下是**冗餘的防禦深度**。
+
+這不是修復缺陷（多一層防禦正當），但 handler 宣稱
+**「只做 re-raise（mutation A）9 條裡只死 1 條、主測試存活」與實測相反**——
+它描述的 mutation A 是「只 re-raise 不加守衛」，而我實測那個組合是**全過**。
+方向對（兩處都改才完整）、數字錯（死 0 條不是 1 條）。
+
+**留給後人的一格**：若日後有人「簡化」掉 `while not self._stopping`，
+測試不會red。要補鎖就得寫一條「stop 後再 put 一個 job，迴圈不得取用它」的測試。
+
+### handler 推翻本 BR 三格，皆經獨立坐實
+
+**① 「修復方向 ②」說 stop() 要標記進行中的 job 但沒說標成什麼——標 `paused` 是錯的。**
+`_load_jobs_from_disk():135` 只對 `queued`/`downloading` 重新入列，標 `paused`
+會讓被關機中斷的下載重啟後**永遠不會自動繼續**，且與使用者主動暫停共用同一個輸出。
+改標 `queued` + 明確 error_message（`_mark_interrupted_by_shutdown()`）。
+mutation B 正是鎖住這格的測試。
+
+**② 「沒驗證的」第 2 項（`_run_single_job:238`）確認有同樣問題，已一併修。**
+它雖不在 `while True` 裡，但 `stop()` 必須等它結束；不 re-raise 的話
+`asyncio.wait` 會等到那個 task 以「正常完成」收場，`stop()` 回 True 但
+shutdown 期間進行中的 job 沒被標記狀態。
+
+**③ 「沒驗證的」第 3 項（`:438`）讀過，無問題，不用動。** 它在
+`_execute_download_with_resume` 的重試迴圈內，寫的是無條件 `raise`，
+存在理由是擋住下一行 `except Exception` 把 CancelledError 吞進重試。語意正確。
+
+### handler 過程中自陳的儀器缺陷（值得記）
+
+第一版 `stop()` 沒去重 cancel 目標：`_process_queue` 執行 job 時會把自己同時
+放進 `_active_tasks` 與 `_worker_task`，於是同一個 task 被 cancel 兩次——
+第二次剛好打在 `queue.get()` 上而穿透，**把吞取消的缺陷蓋掉**，
+mutation 下 `test_stop_after_pause_still_works` 假性存活。
+
+**「取消真的穿透了」與「第一次被吞掉、第二次剛好打在 queue.get() 上才穿透」
+共用同一個輸出。** 已加去重（`:190-196`）。
+
+### 仍未涵蓋（不阻礙結案）
+
+- 真實網路下載被 stop 中斷時，httpx socket 是否乾淨關閉、`.part` 檔是否完整落盤
+- `delete_job` 路徑（與 `pause_job` 共用取消機制，推論相同但未實測）
+- 多個 job 併發下的 `stop()`（只測到單一 in-flight + 一個排隊）
+- 修復對 pause/resume/delete 三個 **HTTP 端點**的影響（測的是 worker 方法層）
+
+以上四項都是**已知範圍邊界**，不是未修的缺陷。本 BR 的核心主張
+（迴圈關不掉）已被修復並以 42 倍的容器實測差異坐實。
 
 - **未量真實 uvicorn 關閉時的實際行為。** 上述 ③ 是讀 code 得出的，
   未實測 `docker compose stop` 是否真的被拖到 SIGKILL。
