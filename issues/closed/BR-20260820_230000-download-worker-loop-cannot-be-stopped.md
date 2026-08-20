@@ -296,9 +296,49 @@ mutation A                  1 failed / 10 passed  rc=1（非 124）
         CONTROL 同指令對 tests/ 44 bytes 非空
 ```
 
-**handler 報告的行號 `:206` 是筆誤**，landed bytes 的 `pytest.fail` 在 `:390`，
-我實測死的位置也是 `:390`。不影響結論，但「哪一條測試死了」正是它自己上一輪
-道歉的失效類別，記在這裡。
+**行號一律標座標系（`log:` / `src:`）——這條規則是被一次誤判換來的。**
+
+我 round 2 驗收時在此處寫過「handler 報告的行號 `:206` 是筆誤，它落在
+`test_pause_job_marks_paused_and_keeps_loop_running` 內」。**那個歸因是錯的，已收回。**
+
+handler 收到 dismiss 後回報更正，我獨立重跑 mutation A 產生自己的 log 驗證
+（它的 scratch 已清，我不能靠它的引述——那條路徑上「說謊」與「證據被清掉」
+共用同一個輸出）：
+
+```
+指紋 guard 1->0 / re-raise 2->2（未動）/ while True 0->1
+log 共 212 行
+  log:126 = E               TimeoutError
+  log:130 = During handling of the above exception, another exception occurred:
+  log:206 = E           Failed: 旗標已立，但 `_process_queue` 在 3.0s 內沒有結束…
+CONTROL 反向搜尋（不看行號、只找字串，避免我拿行號去找行號）：
+  TimeoutError_E_line = 126   During_handling_line = 130   E_Failed_line = 206
+```
+
+**三個行號在我獨立產生的 log 裡全部逐字命中**——它報的是一組一致的 **log 座標**，
+不是筆誤。它指名的死者（`test_loop_guard_refuses_new_work_once_stopping`）
+與我實測一致，從未指錯。
+
+我為什麼會誤讀：`:206` 拿到 source 裡查，**確實**落在 `:200` 那條 pause 測試內
+（那行是 docstring）。兩個座標系共用同一個 `:NNN` 格式，而**讀者預設行號指向
+原始碼——那個預設是合理的**。
+
+所以真正的缺陷是「行號沒有座標系」，不是「誰記錯了」。這是本包同一失效類別的
+**第四次**，而且是最純粹的一次：
+
+```
+① handler 的 cancel 去重      兩種穿透共用一個輸出
+② dispatcher 的空 diff 控制組  歸屬釐清與檔案是空的共用一個輸出
+③ handler 的 mutation A 代號   兩個 patch 共用一個名字
+④ 這一格                       兩個座標系共用一個行號格式
+```
+
+**規則**：本 repo 往後所有行號一律標座標系——`src:390`（原始碼）、`log:206`
+（輸出 log）、`sha:abc1234`（commit 內）。不標的行號視同未標明單位的數字。
+
+**附帶一格我差點踩的**：我原本想拿「handler 也引了 `:130 During handling`」
+當它座標系一致的佐證——**那是污染的**，我自己在 `[BRNS-DONE]` 裡就寫過那句，
+它可能只是回音。唯一乾淨的判法是我自己重跑，我做了。
 
 #### round 2 新固定下來的一個行為（本 BR 未曾討論過）
 
