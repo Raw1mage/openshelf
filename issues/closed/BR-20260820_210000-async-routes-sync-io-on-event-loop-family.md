@@ -1,11 +1,14 @@
 # BR-20260820_210000 — `async def` 路由與 worker 在事件迴圈執行緒上做同步 I/O（族群性缺陷）
 
-- **Status**: **PARTIAL** — A/B/C/D/F 節已修並驗證；**E 節仍在**（使用者裁示暫緩，見下方）。
+- **Status**: **CLOSED（2026-08-21）** — A/B/C/D/E/F 節全數已修並經 dispatcher 獨立驗收。
   - A+B `2920ef6` / C+D+F(部分) `054838c` / F 節 worker 層 `4aa378a` / F 節接線 `2391ae0`
-  - **E 節未修是決策不是漏修**：它動 `download_worker.py` 每 64KB 一次同步 `f.write`，
-    而那是 BR-160000 觀察期的第三個候選機制——修它會抹掉診斷訊號。
-    使用者裁示（2026-08-20）：先讓 BR-160000 觀察期跑完再動 E 節。
-  處置紀錄與更正見下方「## 處置紀錄（A+B 節）」與「## 處置紀錄（F 節 O(N²)）」。
+  - **E 節（含併入項 `delete_download_job` 的 `unlink`）`2d69b3f`，2026-08-21**
+  - ⚠ 本行於 2026-08-21 更正：上一版寫「E 節仍在（使用者裁示暫緩）」——
+    **那行已過期**。暫緩的前提是「修 E 節會抹掉 BR-160000 觀察期的診斷訊號」，
+    而 BR-160000已於同日以「機制已消除」結案（使用者裁示），該前提不再成立。
+  處置紀錄與更正見下方「## 處置紀錄（A+B 節）」、「## 處置紀錄（F 節 O(N²)）」
+  與「## ⬆ 2026-08-21：E 節處置紀錄」。
+- **Closed**: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Family**: `event-loop-blocking`
 - **Severity**: 高（使用者可感知：任何一格阻塞 loop，全站所有請求整條延後，包含完全不碰 DB 的端點）
@@ -136,8 +139,100 @@ handler K 在 C/D/F 包標出、未動：數百 MB 的 `.part` 檔在 NFS（`tim
 
 使用者裁示合併的理由（dispatcher 轉述）：分開修會讓 BR-160000 觀察期多一個變因。
 
-**本節（含併入項）仍暫緩派工**，等 BR-160000 觀察期跑完——修 E 節會抹掉那張 BR 的第三候選機制的診斷訊號。
-這是使用者已拍板的取捨，不是漏派。
+~~**本節（含併入項）仍暫緩派工**，等 BR-160000 觀察期跑完——修 E 節會抹掉那張 BR 的第三候選機制的診斷訊號。這是使用者已拍板的取捨，不是漏派。~~
+
+⬆ **上段已於 2026-08-21 失效**（划掉不刪：直接刪除會讓下一個讀者再想出同一個暫緩理由）。
+BR-160000 已以「機制已消除」結案（使用者裁示），暫緩的前提不存在了。處置見下一節。
+
+## ⬆ 2026-08-21：E 節處置紀錄（commit `2d69b3f`）
+
+handler `ses_fdf38a329ffehvLOfKjb3cCBwm`，dispatcher 六格判準獨立重跑後授權 commit。
+
+### 修什麼（十個呼叫點）
+
+不用 `run_in_threadpool`（那會吃預設 40 格），而是**專用 `anyio.CapacityLimiter(4)`**
+（`download_worker.py:37 _FILE_IO_LIMITER`），透過 helper `_run_file_io` 包裝：
+
+| 行 | 呼叫點 | 取捨 |
+|---|---|---|
+| 783 / 799 / 859 | `_part_size()` | `exists()`+`stat()` 兩次 NFS RPC 併成一次 `stat(2)`，順帶消 TOCTOU |
+| 831 / 845 | `open()` / `f.close()` | 開檔本身在 NFS 上也會 stall；`close` 放 `finally` 重現 `with` 的保證 |
+| 836 | **`f.write(chunk)`** | E 節主體。**逐 chunk 進出**，每次只持有一次 64KB 寫的時間 |
+| 869 | `part_file.replace()` | 跨裝置時退化為整檔複製 |
+| 879 | `pipeline.process_file()` | **單次最久**，CPU-bound |
+| 579 | `_remove_part_file()` | 三態分開，不再 `except: pass` |
+| 585 | `_save_jobs_to_disk()`（`adelete_job` 內） | 已在 async 路徑上、不在 finally 裡 |
+
+```
+grep -c _run_file_io app/crawler/download_worker.py  = 11  rc=0
+CONTROL _zzz_run_file_io_zzz                          =  0  rc=1   ← 有鑑別力
+（改造前該檔 grep -c run_in_threadpool 為 0）
+```
+
+### ⭕ handler 拒絕照 dispatcher 授權的字面做，而它是對的
+
+dispatcher 授權 `crawler_routes.py:231` 改成 `await run_in_threadpool(worker.delete_job, job_id)`。
+**照字面做會引入一個靜默缺陷**：`delete_job` 內含 `task.cancel()`，
+而 **asyncio Task 的方法不是 thread-safe**。dispatcher 獨立重跑（Python 3.12）：
+
+```
+debug=False CROSS            cancelled=True   err=None       ← 一般模式「碰巧會動」
+debug=False CONTROL_SAMELOOP cancelled=True   err=None       ★控制組
+debug=True  CROSS            cancelled=False  RuntimeError: Non-thread-safe
+                                              operation invoked on an event loop
+                                              other than the current one
+debug=True  CONTROL_SAMELOOP cancelled=True   err=None       ★有鑑別力
+```
+
+**一般模式回 `cancelled=True` ⇒ 測試全綠、code review 看不出來、線上跑幾個月也不會有人發現。**
+debug 模式才顯形，而那時取消是真的沒生效。即判準①：
+**「刪除成功且下載真的停了」與「回 200 但下載還在背景跑」共用同一個輸出。**
+
+改用 **A′**：worker 側新增 `adelete_job()`，`task.cancel()` 留 loop（便宜、純記憶體）、
+`unlink()` 進專用執行緒（數百 MB `.part` 在 `hard,timeo=600` 的 NFS 上）。
+`crawler_routes.py` 仍只動 `:230` 一行 + docstring。
+
+⚠ **給未來讀者**：若你覺得 `adelete_job` 多餘、想「簡化」成 `run_in_threadpool(delete_job)`——
+你會做完、測試全綠、然後把缺陷種回去。**失敗的形狀不會指向你自己。**
+
+### 專用池的真正價值（比「移除阻塞」準確）
+
+> NFS 完全 stall 時，4 個 token 會被卡住的下載長期佔住，後續下載排隊。
+> **但搜尋、書單、jobs 完全不受影響**（它們走預設 40 格與 event loop）。
+> **故障被例限在下載功能內，不再全站停頓。**
+
+失效形狀是**排隊變慢，不是卡死**：`CapacityLimiter` 是 FIFO 無餓死路徑；
+持有粒度是一次 64KB 寫 ⇒ 5 本同時下載是**交錯進行**，不是第 5 本等前 4 本下載完；
+`process_file` 才是長持有，但那是 CPU-bound，給 40 個 token 只會讓 CPU 過載。
+**`4` 是設計判斷不是量測結果**（4 vs 8 vs 16 未實測，handler 主動標明）。
+
+### 刻意不改：`_save_jobs_to_disk` 的 9 個呼叫點
+
+它們經 dispatcher 重驗後**一個都不動**（`grep -c` 仍為 9），兩個獨立理由：
+
+1. **落點不在 NFS**。`:104 _jobs_file = storage.db_dir / "download_jobs.json"`，
+   而 `dec5b44` 搬的正是 `db_dir` ⇒ `df -T data/db` = ext4（CONTROL `df -T /nas` = nfs4）。
+   這一格推翻了本 BR 原本把它列進「落在 NFS」族的分類——**不是列多了，是列錯了類**。
+2. **動它會讓 `BR-20260820_230000` 回歸**。`:409` 與 `:623` 在 **CancelledError 傳播中的 `finally`**，
+   換 `await` 後那個 await 在取消情境下自己會被取消 ⇒ 存檔被跳過 ⇒
+   「關機時把進行中的 job 落盤成可辨識的中斷態」這個剛修好的保證失效。
+
+### dispatcher 獨立重跑的六格（非採信 handler 自報）
+
+```
+mkdir   CONTROL_STARTUP=8 非零 / SUBJECT_REQUEST_1=0 / _2=0 / HAS_DISCRIMINATION=YES
+測試   267 passed, 27 skipped   PYTEST_RC=0 獨立取得（基線 259 + 新增 8）
+線上   search 0.1056 / collections 0.0039 / jobs 0.0022 回 []
+        CONTROL /api/zzz_no_such_route → 404      ★200 有鑑別力
+runtime ROUTE_USES_adelete_job=True / LIMITER_TOTAL_TOKENS=4 / GUARD_PRESENT=True
+未重啟 RestartCount=0 StartedAt=2026-08-20T15:59:47.875482208Z
+commit  FILE_COUNT=5 EXACT_MATCH=True UNEXPECTED=[] SQLITE_LEAKED=0 ISSUES_LEAKED=0
+```
+
+### 本包**未**宣稱的
+
+未解釋 BR-160000 的歷史 30.7s 尖峰（兩張帳）。本包只**移除機制**，不主張因果。
+也未量任何 NFS 實際危害、未量改造後的 loop lag（那需真實下載 job）。
 
 ## F. 較輕但成本隨 N 成長的
 
