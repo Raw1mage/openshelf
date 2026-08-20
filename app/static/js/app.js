@@ -2034,7 +2034,21 @@ async function loadDispatchedIssuesNotice() {
     const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/issues`);
     if (!res.ok) return;
     const data = await res.json();
-    if (data.total > 0) {
+
+    // BR-20260821_020000：source_available === false 代表後端根本讀不到來源目錄，
+    // 此時 total=0 不是「沒有 BR」而是「不知道有沒有」。這一格必須跟正常的空清單
+    // 分開顯示——否則使用者眼中兩者仍然是同一個畫面（就是本 BR 要修的病）。
+    // 反向也要成立：正常空清單時不得顯示這行，否則它變成常態雜訊而被忽略。
+    // 舊後端不回這個欄位（undefined），!== false 讓它照舊走正常分支，不誤報。
+    if (data.source_available === false) {
+      noticeEl.style.display = "block";
+      noticeEl.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <span>⚠️ 無法讀取 BR 報告來源目錄，以下清單為「未知」而非「無報告」</span>
+          <span style="font-size: 0.75rem; color: #f87171;">請檢查 issues/ 掛載或路徑設定</span>
+        </div>
+      `;
+    } else if (data.total > 0) {
       noticeEl.style.display = "block";
       noticeEl.innerHTML = `
         <div style="display: flex; align-items: center; justify-content: space-between;">

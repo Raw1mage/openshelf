@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -15,6 +16,8 @@ from app.models.catalog import (
 from app.crawler.validator import MirrorValidator
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
+
+log = logging.getLogger(__name__)
 
 def get_dao() -> CatalogDAO:
     return CatalogDAO()
@@ -114,8 +117,30 @@ def reset_libgen_mirrors(dao: CatalogDAO = Depends(get_dao)):
 def list_dispatched_issues():
     """列出目前 issues/ 目錄下自動產生之所有 Libgen 鏡像解析問題報告 (BR)。"""
     issues_dir = Path(__file__).parent.parent.parent / "issues"
-    if not issues_dir.exists():
-        return {"total": 0, "issues": []}
+
+    # BR-20260821_020000：來源目錄不可用時，絕不可與「目錄在、但真的沒有 BR」
+    # 共用同一個輸出。兩者的 total 都會是 0，所以差異必須由一個獨立欄位承載。
+    #
+    # 命名刻意用 source_available 而非 mount_ok：本函式唯一觀察得到的事實是
+    # 「這個路徑不是一個可用目錄」，它**無法**分辨成因（容器沒掛載 / 路徑解析
+    # 改變 / 權限不足 / 該位置是一個檔案）。叫 mount_ok 等於用欄位名斷言一個
+    # 本檢查證明不了的成因，那本身就是新的一次「兩態共用一個輸出」。
+    # 成因留給 log 與 source_path 讓人去判讀，欄位只陳述可觀察到的事實。
+    if not issues_dir.is_dir():
+        log.error(
+            "BR 清單來源目錄不可用，讀取端回傳空清單（total=0）："
+            "resolved_path=%s path_exists=%s。"
+            "可能成因：容器未掛載 ./issues、路徑解析改變、權限不足、"
+            "或該位置存在但不是目錄——本檢查無法分辨是哪一種。",
+            issues_dir,
+            issues_dir.exists(),
+        )
+        return {
+            "total": 0,
+            "issues": [],
+            "source_available": False,
+            "source_path": str(issues_dir),
+        }
 
     # 本函式是同步 def（跑在 anyio threadpool，不阻塞事件迴圈），但它佔用的是
     # 全 app 共用的 40 個 threadpool 名額——BR-20260820_210000 A+B 節的修復已經
@@ -149,4 +174,9 @@ def list_dispatched_issues():
             "path": path
         })
 
-    return {"total": len(issue_list), "issues": issue_list}
+    return {
+        "total": len(issue_list),
+        "issues": issue_list,
+        "source_available": True,
+        "source_path": str(issues_dir),
+    }
