@@ -1,7 +1,11 @@
 # BR-20260820_210000 — `async def` 路由與 worker 在事件迴圈執行緒上做同步 I/O（族群性缺陷）
 
-- **Status**: **PARTIAL** — A+B 節已修並驗證（commit `2920ef6`，2026-08-20）；**C/D/E/F 節仍在**。
-  處置紀錄與更正見下方「## 處置紀錄（A+B 節）」。
+- **Status**: **PARTIAL** — A/B/C/D/F 節已修並驗證；**E 節仍在**（使用者裁示暫緩，見下方）。
+  - A+B `2920ef6` / C+D+F(部分) `054838c` / F 節 worker 層 `4aa378a` / F 節接線 `2391ae0`
+  - **E 節未修是決策不是漏修**：它動 `download_worker.py` 每 64KB 一次同步 `f.write`，
+    而那是 BR-160000 觀察期的第三個候選機制——修它會抹掉診斷訊號。
+    使用者裁示（2026-08-20）：先讓 BR-160000 觀察期跑完再動 E 節。
+  處置紀錄與更正見下方「## 處置紀錄（A+B 節）」與「## 處置紀錄（F 節 O(N²)）」。
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Family**: `event-loop-blocking`
 - **Severity**: 高（使用者可感知：任何一格阻塞 loop，全站所有請求整條延後，包含完全不碰 DB 的端點）
@@ -373,6 +377,76 @@ E 節   動 app/crawler/download_worker.py，與 BR-230000 的檔案集交集非
        —— 現在動它會抹掉觀察期的診斷訊號（本 BR 判準 4 自己寫的）
 C/D/F  範圍收斂：族群性缺陷一次吞六節會讓驗收無法歸因
 ```
+
+## 處置紀錄（F 節 O(N²)）
+
+**狀態：已修並驗證。** `4aa378a`（worker 層）+ `2391ae0`（route 層接線）。
+
+### handler I 推翻我兩格，皆經 dispatcher 獨立重驗坐實
+
+**① O(N²) 是兩個不是一個。** 我的派工單只寫「每筆整份重寫 `download_jobs.json`」，
+但 `enqueue()` 每筆還做 `src:247` 的線性掃描找重複。逐筆 N 次 ⇒ **掃描 O(N²) + 寫入 O(N²)**，
+只修存檔那半會讓掃描原封不動留著。
+
+**② 「N=120 還不痛」是線性外推，而 O(N²) 不能那樣外推。** dispatcher 獨立重測：
+
+```
+   N   per-item    batch   speedup  saves_old  saves_new
+  30     11.7ms     1.2ms     9.8x         30          1
+ 120     96.6ms     2.1ms    45.6x        120          1
+ 480   1507.3ms     8.2ms   183.5x        480          1   ← 1.5 秒 loop 阻塞
+1000   6484.6ms    18.5ms   350.7x       1000          1
+
+CONTROL spy 逐筆 10 筆 → saves=10          證明 spy 真的在數
+CONTROL 空批次        → saves=0（非 1）    證明「1 次」不是恆定值
+CONTROL 全重複批次    → saves=0, jobs=5    證明去重不是靠不建 job 達成
+每組 assert len(jobs)==n                   證明兩邊都真的建了 N 個 job
+```
+
+**N=480 是 1.5 秒的事件迴圈阻塞**，使用者勾選整頁搜尋結果就到這個量級。
+
+### handler I 主動標 FIXED-UNDEPLOYED（本包最有價值的一格）
+
+它在交件**第 0 節開宗明義**寫：worker 層 O(N) 可用，但 route 層仍逐筆呼叫，
+**線上零改善**。route 層是它的禁區（我派工單明列「回報給我，我另外處理」）。
+
+若它照一般寫法交「批次 API 完成」，我驗 worker 層會全綠，
+然後把一個線上零改善的東西當成修好了——**「修好了」與「沒修」在線上會共用同一個輸出**。
+
+dispatcher 獨立驗證它的宣稱：`git diff --name-only -- app/api/crawler_routes.py` 空
+（控制組對 `download_worker.py` 非空）；`grep enqueue_many` 只在 worker 自己內部命中
+（控制組舊 API 在 route 有兩處呼叫 rc=0）。坐實。
+
+### 接線（dispatcher 自接，`2391ae0`）
+
+`src:136-160` 的 for 迴圈改為一次 `enqueue_many`。**`if item.md5` 的過濾刻意保留**：
+現行行為靜默略過缺 md5 的項，而 `enqueue_many` 缺 md5 拋 `ValueError`；
+在 route 端過濾讓本次改動**只改成本不改行為**。
+
+新增 `tests/test_batch_download_route_uses_batch_api.py`（4 條），判準用**存檔次數不用計時**
+——時間會浮動，「機器今天比較快」與「改成 O(N) 了」共用同一個輸出。
+
+runtime 驗證（不只驗磁碟檔）：容器內 `inspect.getsource(enqueue_batch_download)`
+→ `enqueue_many` 在、舊 for 迴圈不在、控制組 bogus 不在。**FIXED-UNDEPLOYED 轉 FIXED。**
+
+### dispatcher 自陳的兩個量測缺陷
+
+1. **第一版效能探針用了不存在的 `data_dir=` 參數** → `TypeError` rc=1。
+   至少它**大聲失敗**，沒有靜默給出令人安心的數字。
+2. **第一版 mutation A 死 4 條而非 handler 報的 2 條**——不是它報錯，是**我把「移動」做成「新增」**。
+   `enqueue()` 已委派給 `enqueue_many()`，多加一行會讓逐筆路徑每筆存 2 次，控制組跟著死。
+   **兩個不同的 patch 共用 `mutation A` 這個名字——本族同一失效類別第五次。**
+   指紋救了這格：`save calls 8→8` vs 我的版本會變 9。
+3. **route 改動的第一版 `assert` 因自己寫的 docstring 命中 pattern 而誤報**
+   （`if item.md5` raw 計數=2，code-only=1）。這是 handler K 踩過的同一形狀
+   （它是 `dao.current_iso()` 出現在註解裡）。改用 `tokenize` 剝掉 comment/STRING 才分辨得出。
+
+### 遺留（不在本包，已記）
+
+- **`delete_download_job` 的 `part_file.unlink()`**（`download_worker.py src:356`）
+  數百 MB `.part` 在 NFS 上 unlink 仍會佔住 loop。handler K 標出、handler I 未動。
+- **缺 md5 靜默略過**：送 N 筆回 N-1 筆沒有任何訊號。handler I 傾向改成出聲，
+  dispatcher 同意那是真缺陷，但**會影響既有前端，需使用者決策**，故本包維持現狀並用測試鎖住。
 
 ### 派 C/D/F 節時必須加的判準（handler 的自陳，dispatcher 採納）
 
