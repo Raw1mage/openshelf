@@ -1,9 +1,13 @@
 # BR-20260821_040000 — `dec5b44` 只搬了 DB：`raw_dir` 與 `parsed_dir` 仍在 NFS，且寫入跑在 event loop 執行緒上
 
-- **Status**: OPEN
+- **Status**: **PARTIAL** —— 兩半中的一半已修，另一半未裁決。不得歸檔至 `closed/`。
+  - ✅ **已修**：每請求 `os.mkdir` on NFS（handler `ses_fdf38a329ffehvLOfKjb3cCBwm`，見下方「已消除的那一半」節）
+  - ⏸ **未修**：`raw_dir` / `parsed_dir` 實體仍在 NFS（修法選項 A / C 未裁決）
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Family**: `db-storage-substrate`
-- **Severity**: 待定 —— **理論風險已坐實，實際危害尚未觀察到**（見「為何不是高」節）
+- **Severity**: 待定（殘餘那一半）—— **理論風險已坐實，實際危害尚未觀察到**（見「為何不是高」節）。
+  ⚠ 本欄於 2026-08-21 改寫：原本的「待定」覆蓋兩個機制，而其中一個（每請求 mkdir）
+  的爆炸半徑其實是**全站**而非下載功能，已不適用同一個論證。拆開見下。
 - **Filed**: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 - **Found-by**: handler `ses_fdf8fc2c4ffeHyJI2iGo3sB5b8`（`[BRNS-ASK] round=1` 第三格）；
   dispatcher 獨立驗證掛載事實後建檔。**這格三張既有 BR 都沒有把它連起來。**
@@ -189,7 +193,57 @@ NEGCTL 純 exists() 後 mkdir_total=0   ← 有鑑別力，不是恆回 1
    做 `resolve_path` + `exists` + 全檔讀。加上每請求 mkdir ——
    **`parsed` 的 NFS syscall 頻率其實高於 `raw`，並列不算誤導，反而低估了 parsed。**
 
+## ⬆ 2026-08-21：已消除的那一半（每請求 mkdir）—— 下方「為何不是高」已不適用於它
+
+**先讀這節再讀下一節。** 本 BR 原本把兩個機制包在同一個 Severity 裡，而它們的爆炸半徑不同。
+
+### 兩個機制必須拆開
+
+| | 機制 | 爆炸半徑 | 路徑 | 狀態 |
+|---|---|---|---|---|
+| **①** | 每一個 API 請求對 NFS 下 3 次 `os.mkdir` | **全站每一個請求** | threadpool（40 格） | ✅ 已修 |
+| **②** | `raw_dir` / `parsed_dir` 實體寫入在 NFS | 下載 / 入庫功能 | 專用池（4 格） | ⏸ 未裁決 |
+
+**機制① 是本 BR 建檔時被低估的那格。** 原文把它寫成「下載路徑的基質層事實」，
+實際上連 `q=zzzznomatch` 那種完全不碰檔案、四毫秒就回完的搜尋，也在對 NFS 下 syscall。
+連接鏈：任何 `Depends()` → `DatabaseEngine()`（`engine.py:24`）→ `StorageManager()`
+→ `__init__` 無條件 `ensure_directories()` → 3 次 `mkdir`。
+而 7 個 provider 全部是 `sync def`（`TRUE_ASYNC_PROVIDERS=0`）⇒ 全部走 threadpool。
+
+### 修法與驗證（dispatcher 獨立重跑，非採信 handler 自報）
+
+`app/storage/manager.py` 加進程級 `_ensured_dirs` 守衛（`src:33`）。
+
+```
+script/probe_mkdir_per_request.py —— 攬 os.mkdir（最底層，非 Path.mkdir）
+
+                     改造前                        改造後
+CONTROL_STARTUP      total=17 raw=6 parsed=5 db=5  total=8 raw=3 parsed=2 db=2
+SUBJECT_REQUEST_1    total= 3 raw=1 parsed=1 db=1  total=0
+SUBJECT_REQUEST_2    total= 3 raw=1 parsed=1 db=1  total=0
+HTTP_STATUS          200 / 200                     200 / 200
+CONTROL_HAS_DISCRIMINATION                         YES
+```
+
+**正控制組兩邊都非零** ⇒ 改造後的 0 不是「攬截壞了」。
+**第二次請求仍是 0** ⇒ 不是快取假象。
+
+守衛刻意**不做 `exists()` 複查**（`manager.py:52-55` 註解）：那是拿 3 次 `stat(2)`
+換 3 次 `mkdir(2)`，且會把「掛載掉了」靜默重建成本地空目錄 —— 失敗態與正常態共用輸出。
+
+### ⭕ 這一格仍是 undecidable，不得當成已驗證
+
+探針走的是 `TestClient` + 進程內攬截，**不是**對線上 8088 的 uvicorn pid 跑 `strace`。
+它證明了「那條 DI 鏈不再下 mkdir」，**證不了線上行程當下的守衛狀態**
+（`docker exec` 開的是新 python 行程，讀到的 `_ensured_dirs` 只代表新行程剛啟動）。
+handler 主動標出這個限制，dispatcher 採納並保留在此。
+
 ## 為何 Severity 不是「高」——這格是本 BR 最重要的判斷
+
+> ⚠ **適用範圍（2026-08-21 限縮）**：本節的論證只適用於上表的**機制②**
+> （`raw_dir`/`parsed_dir` 實體在 NFS）。**機制①（每請求 mkdir）不適用**：
+> 它的爆炸半徑是全站而非下載功能，且已於本日修正，無需再議 Severity。
+> 原本把兩者包在同一個論證裡是建檔時的分類錯誤。
 
 **理論機制成立，但歷史觀察到的尖峰形狀不符合它的預測。**
 
