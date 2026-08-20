@@ -1,6 +1,33 @@
 # BR-20260821_010000 — `resolve_download_url` 的 md5 早退擋掉了一條不需要 md5 的下載路徑
 
-- **Status**: **OPEN** — 未修，未派工（在飛 handler 已 2 顆，依單線紀律收手）
+- **Status**: **CLOSED — 路線被使用者否決，非修復**（2026-08-21，`3597e2e`）
+- **Closed**: 2026-08-21 by `ses_fe7b5cbadffeSlxj0dv1Z740O4`
+
+## 處置（先讀這節，本 BR 的主張未被採納）
+
+**使用者裁示（原話）：「下載不到的書就不要顯示搜尋結果」。**
+
+本 BR 主張的是相反方向——「md5 空但 `mirror_links` 可用時應該還是能下載」，即拿掉
+`mirror_resolver.py:140` 的 `if not md5: return None` 早退，讓 step 2 有機會執行。
+**使用者裁定不走這條路。**
+
+實際採行的是 `BR-20260821_030000` 的修法 A：在 **parser 來源端**就丟棄無 md5 的 row
+（`libgen_live.py:361` / `:437` 的 `and` 改成單一條件）。既然那些項目不再出現在搜尋
+結果裡，`mirror_resolver.py:140` 的早退**從此走不到**——它原地保留當防護，**未動**。
+
+所以本 BR 的技術分析仍然成立（那行確實是我們自己寫的、確實擋掉了一條 helper 簽名裡
+沒有 md5 的路徑），但它描述的「機會」被產品決策關閉了。**這是 WONTFIX，不是 FIXED**——
+差別在於：若未來要重開那條路徑，本 BR 的分析可直接引用，不必重做。
+
+**Q3 實測結論（探勘 `ses_fdfff5772`，控制組完整）**：兩個活躍鏡像 libgen.li / libgen.la
+共 50 row，第 8 欄含 32-hex 的 **50 row**，缺 **0 row**——md5 由同一 row 的 5 條 href
+冗餘攜帶。控制組：改抓 `cols[7]`（副檔名欄）含 32-hex = 0；404 body 解析 `table_found=False`；
+恆等式 `A(有href) == B(含32hex) + C(缺32hex)` 成立。**本 BR 描述的路徑觸發機率為 0。**
+
+⚠ 但探勘 agent 給的**理由**被 dispatcher 推翻：它說 `libgen.is` 不在 dao 預設清單。
+實測 `DEFAULT_LIBGEN_MIRRORS` 裡 `libgen.is` / `.rs` / `.st` 三者 `enabled=True` 且確實
+在清單內；真正濾掉它們的是 `dao.py:941-943` 的 `validation_status != "verified"`。
+**那是使用者按一次驗證就會翻轉的狀態，不是結構性死路。**
 - **Filed by**: `ses_fe7b5cbadffeSlxj0dv1Z740O4`（dispatcher）
 - **Trigger**: 使用者質問「你的意思是遠端下載的時候一定要查得到 md5 才准下載？誰規定的？」
 - **Family**: `openshelf/crawler-download-path`

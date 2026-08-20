@@ -1,6 +1,71 @@
 # BR-20260821_030000 — 空 md5 的公網項目全部共用同一個 work_id `libgen_`，且互撞在前端與後端都無聲
 
-- **Status**: OPEN（已建檔，未修）
+- **Status**: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`3597e2e`），但四格殘留未消除，故不進 `closed/`
+- **Fixed-by**: `3597e2e`（handler `ses_fdfe0c00fffea02pCkU7S4EE3x`，dispatcher 驗收 2026-08-21）
+
+## 處置（使用者裁示）
+
+**使用者原話：「下載不到的書就不要顯示搜尋結果」** ⇒ 採**修法 A（收緊放行條件）**，
+並因此**關掉 BR-20260821_010000** 的路線（兩張方向相反，已一起裁決）。
+
+```
+:361  if not md5_val and not clean_title:   →   if not md5_val:      (li, 9 欄式)
+:437  if not md5_val and not title:         →   if not md5_val:      (is, 10 欄式)
+```
+
+**`work_id` 未動**：收緊後 `md5_val` 保證非空，`f"libgen_{md5_val}"` 不再可能產出字面值，
+互撞從源頭消失。DB 全表掃描確認**不需要 migration**（見下方）。
+
+**丟棄留痕**（handler 主動加，dispatcher 採納）：兩個 parser 各加 `dropped_no_md5` 計數器
+＋ `log.debug`。理由是判準①——parser 回 `[]` 可能是 (a) 這批 row 全無 md5、(b) parser 壞了、
+(c) 搜尋本來就沒結果。**改動前 (a) 不存在，改動後 (a) 變成常態路徑**，於是靜默地併進
+另外兩個。log 讓 (a) 可辨識，也讓零樣本的 is 適配器日後有數字可看。
+
+## 殘留（PARTIAL 的理由，四格皆未消除）
+
+1. **「使用者現在搜尋看不到那些書了」只有單元層證據，無線上實測**。且依現有母體
+   （50/50 全含 md5）也**造不出**會被丟棄的真實項目——要驗證只能餵構造的 HTML，那就回到單元層。
+2. **is 適配器的 fixture 是依 `:411`/`:428` 程式碼結構自行構造，非真實 HTML**。若真實 is 鏡像
+   的第 10 欄以後結構與構造的不同，測試會通過但線上行為未知。
+3. **`validator.py:115/138` 的連帶影響只有推論**。它用
+   `len(records) > 0 and any(r.get("md5") for r in records)` 判定鏡像是否 verified。
+   原本「全部 row 無 md5」的鏡像拿到 `records 非空但 any() 為 False` → step 4；
+   現在拿到 `records 為空` → 同樣 step 4。**終點相同，但走的分支不同**——未實測。
+4. **未查快取層**是否有序列化過的搜尋結果會繞過 parser 供給既有項目。
+
+## 已驗收的部分（dispatcher 獨立重做，非採信 handler 自報）
+
+- 全套件 `259 passed, 19 skipped` rc=0（基線 246+19）；新測試 13 passed；控制組 rc=4
+- mutation 三格，各帶指紋、跑完還原，`sha256` 三次皆對回 `7823cd4e88b5e2ad…`
+  - **M1** li 閘還原 ⇒ 殺 **5 條，全是 `test_li_*` + `[li]`**
+  - **M2** is 閘還原 ⇒ 殺 **4 條，全是 `test_is_*` + `[is]`**
+  - **M3** 兩處同時 ⇒ 殺 **9 條，恰為 M1∪M2**，無交集無遺漏
+  - 每格皆驗「刻意沒變」：`workid=2 counter_init=2 counter_inc=2 log_li=1 log_is=1
+    colguard9=1 colguard10=1`
+  - **既有 246 條在三格 mutation 下一條都沒死** ⇒ 先前這個閘壞了不會有人知道
+- **DB 掃描**（dispatcher 獨立重做，六表）：`work` / `identifier` / `manifestation` /
+  `download_job` / `collection_item` 的 exact `'libgen_'` 與 prefix `'libgen_'` **全 0**；
+  控制組 non-null = 42/84/42/0/5；樣本全是 `wk_` 前綴 ⇒ **不需要 migration**
+- fixture 自我驗證（用 BeautifulSoup 數 `<td>`，斷言 li=9 / is=10）——沒有它，
+  「被新閘過濾」與「在 `:331`/`:411` 欄數守衛就被丟掉」共用同一個輸出
+- 範圍：`mirror_resolver.py` / `app.js` / `crawler_routes.py` / `docker-compose.yml` /
+  `issues/` 的 diff 皆 0；控制組 `libgen_live.py` numstat = `26 2`
+
+## handler 推翻 dispatcher 一格，已採納
+
+派工單建議「is 適配器零樣本、風險不對稱，也許該更保守（只加 log 不丟棄）」。
+handler 指出**風險方向被算反了**：現行 `and` 的 is 適配器，一旦使用者在設定頁把某個
+is 鏡像驗證成 `verified`，**第一批結果就可能全部帶著 `work_id="libgen_"` 進 UI**
+——那是現況風險，不是改動引入的。且「li 的書消失、is 的書留著但點了才失敗」這種
+分歧本身就是使用者要消滅的病。log 計數已同時滿足「先觀察」，不需要讓錯誤項目進 UI
+來換取觀察資料。
+
+## 待使用者裁決的一格（handler 提出，dispatcher 同意後送）
+
+**丟棄 vs 標記為不可下載**。使用者字面要的是「不要顯示」，但他真正想要的可能是
+「不要點了才發現失敗」。標記路線**不能單獨成立**：留在結果裡的項目 `work_id` 仍是
+`"libgen_"`，`app.js:474/697/759/1003` 四條互撞路徑一條都沒解，必須同時做修法 B
+（複合 key）——那是另一張工作單的規模。**且目前觸發機率為 0，兩者對使用者的差別也是 0**。
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（openshelf 值星官）
 - **Severity**: 中（無使用者受害實例，但一旦發生是靜默錯配而非報錯）
 - **Filed**: 2026-08-21
