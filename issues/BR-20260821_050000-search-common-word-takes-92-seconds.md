@@ -79,23 +79,102 @@ anyio to_thread.current_default_thread_limiter().total_tokens = 40
 | 併發 60，快查詢（RUN4，**鑑別力控制組**） | 三支同時退化，collections p50 **3ms → 620ms**（兩個數量級）⇒ 探針確實抓得到退化 |
 | 併發 40，慢查詢（RUN6） | **全站停擺 >120s**，連 `async def` 的 `/api/crawler/jobs` 都 timeout |
 
-RUN6 那格超出單純 threadpool 飽和：40 條執行緒在 FTS 掃描上做大量 Python 層 row 處理，**GIL 爭用把 event loop 也餓死**。
+> ⚠ **`async def` 的端點也吃 threadpool token** —— 這格是後來才查明的，見 §五之二。
+> 所以 RUN4 的 jobs（p50 204ms）與 RUN6 的 jobs（timeout）**不需要動用 GIL 就能解釋**：
+> 它的相依 `get_worker` 是 sync def，飽和時它連相依解析都排不進去。
+> GIL 爭用可能仍有貢獻，但**不是必要條件**，原本寫成必要是過度歸因。
 
 ---
 
-## 五、這格改寫了 BR-160000 的候選 1
+## 五、這格與 BR-160000 的關係（**歸因已於 2026-08-21 撤回，見五之二**）
 
-BR-160000 原本把 30.7s 尖峰歸因為「SQLite 鎖爭用累計」。**應改寫為「單一慢查詢佔住 threadpool token」**，理由是歷史形狀逐格對上：
+BR-160000 原本把 30.7s 尖峰歸因為「SQLite 鎖爭用累計」。本 BR 一度改寫為
+**「單一慢查詢佔住 threadpool token」**，依據是歷史形狀看似逐格對上：
 
 ```
 歷史觀察（BR-160000）
   L2_collections  30.704   尖峰   ← sync def，需 token
   L3_search       30.845   尖峰   ← sync def，需 token
-  L1_jobs          0.005   正常   ← async def，不需 token
+  L1_jobs          0.005   正常   ← async def，「不需 token」 ← ✗ 這一格是錯的
   L0_404           0.002   正常   ← 不需 token
 ```
 
-**只有需要 threadpool token 的端點尖峰，不需要的完全不受影響** —— 這正是 threadpool 排隊的指紋，不是鎖爭用（鎖爭用只會打到走 DB 的，不會打到 `/api/health`；而 threadpool 兩者都打）。
+**上表第三列的判準是錯的，整個歸因隨之撤回。** 詳見下節。
+
+### 五之二、撤回：threadpool 飽和**不能**解釋歷史 30.7s
+
+由 handler `ses_fdf8fc2c4`（提出原歸因的同一方）主動撤回，dispatcher 獨立驗證機制後採納。
+
+**錯在哪**：原判準表寫「`async def` ⇒ 不需 token」，但 **FastAPI 的相依解析發生在 body 之前，
+且 sync 相依項一律走 threadpool，與端點本身是否 async 無關**：
+
+```
+crawler_routes.py:179   async def list_download_jobs(worker = Depends(get_worker))
+crawler_routes.py:22    def get_worker() -> DownloadWorker:        ← sync def
+fastapi/dependencies/utils.py:673-676
+    elif _is_coroutine_callable(use_sub_dependant.call):
+        solved = await call(**solved_result.values)
+    else:
+        solved = await run_in_threadpool(call, **solved_result.values)   ← 走這條
+```
+
+**所以 `/api/crawler/jobs` 也搶那 40 個 token。**
+
+dispatcher 獨立驗證（**第一次驗錯，重驗才拿到真值——記錄於此以免下一個人重蹈**）：
+
+```
+第一次：regex 抓 ^(async )?def get_\w+  →  PROVIDER_TOTAL=22, ASYNC_PROVIDERS=2
+        ✗ 把「路由處理函式」誤當 provider（get_category_works / get_job_status
+          是 @router.get 的 handler，不是 Depends 目標）
+
+重驗：先收集所有 Depends(X) 實際引用的名字，再查那些名字的 def 種類
+        NAMES_USED_IN_Depends = [get_crawler, get_dao, get_pipeline,
+                                 get_search, get_storage, get_validator, get_worker]
+        TRUE_ASYNC_PROVIDERS = 0        ← handler 說對了
+        CONTROL_depended_names = 7      ← 有鑑別力，不是恆回空
+```
+
+**證偽的關鍵是 handler 自己的數據**：
+
+| 實驗 | jobs 表現 | 意義 |
+|---|---|---|
+| idle（RUN1） | 3ms | 基線 |
+| RUN4（60 併發快查詢） | p50 **204ms**、max 973ms | 飽和時 jobs **確實**被卡 |
+| RUN6（40 併發慢查詢） | **120s timeout** | 飽和時 jobs **完全**卡死 |
+
+**若歷史那次真是 threadpool 飽和，`L1_jobs` 也該被卡住；歷史觀察是 0.005s。⇒ 不符，假說排除。**
+
+### 五之三、那歷史 30.7s 是什麼？回到原判
+
+`L1` 需要 token 卻快、`L2`/`L3` 需要 token 卻慢 ⇒ **差別不在拿不拿得到 token，在拿到之後做什麼**：
+
+```
+L1_jobs   拿到 token → worker.list_jobs() 讀記憶體 dict  → 0.005s
+L2/L3     拿到 token → 走 SQLite                        → 30.7s
+```
+
+差異落在 **DB 路徑本身**，不在排隊。而那組量測時 **DB 還在 NFS**
+（`git show 73de0aa:docker-compose.yml:19`），`dec5b44` 已將其搬到本地 ext4。
+
+**現行判定**：歷史 30.7s 的成因**仍未確定**。threadpool 飽和假說已排除；
+剩餘主要候選為「DB 當時位於 NFS」（已被 `dec5b44` 消除）。
+
+⇒ **本 BR 與歷史 30.7s 很可能是兩個不同的缺陷，只是形狀相似。** 兩者的連結已斷開。
+
+### 五之四、什麼**沒有**因此動搖（避免矯枉過正）
+
+| 宣稱 | 狀態 | 依據 |
+|---|---|---|
+| `q=the` 確定性 92-95 秒 | **不動** | 直接量測，非歸因（dispatcher 92.143385s） |
+| 三個負控制組 4ms ⇒ 慢的是命中筆數 | **不動** | 直接量測 |
+| threadpool = 40 tokens | **不動** | 雙方各自獨立量到 40 |
+| 飽和造成全站退化（RUN4）／停擺（RUN6） | **不動** | 直接量測 |
+| `search.py` 四個機制因子 | **不動** | dispatcher 逐條在原始碼確認 |
+| WAL 下 writer 鎖不擋 reader | **不動** | 負面實測 |
+| **「threadpool 飽和解釋歷史 30.7s」** | **撤回** | 本節 |
+| BR-040000 每請求 `os.mkdir` | **成立且加強** | 7 個 provider **全部**為 sync def |
+
+**本 BR 的 CRITICAL 判定完全不受影響** —— 那是量出來的，不是推出來的。
 
 ### 附帶：writer 鎖假說有負面實測證據
 
