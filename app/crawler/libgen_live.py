@@ -8,11 +8,13 @@ from bs4 import BeautifulSoup
 class LibgenCrawler:
     """即時檢索 Libgen 公網鏡像與解析書目元資料（具備極速響應、智慧引文拆解與容錯級聯檢索）。"""
 
+    # 鏡像清單為快照，站點是活的。已移除實測死亡者（2026-08-20，見
+    # BR-20260820_111523）：libgen.rocks（自簽憑證 + 法院查封頁）、
+    # libgen.gs（DNS NXDOMAIN）。此處是 D1 同一病灶的第三處，另兩處在
+    # mirror_resolver.BASE_MIRRORS 與 dao.DEFAULT_LIBGEN_MIRRORS。
     MIRRORS = [
         "https://libgen.li",
-        "https://libgen.la",
-        "https://libgen.rocks",
-        "https://libgen.gs"
+        "https://libgen.la"
     ]
 
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -213,10 +215,12 @@ class LibgenCrawler:
             return []
         smart_candidates = self.generate_smart_queries(query)
         
+        # TLS 驗證維持開啟：2026-08-20 實測 libgen.li / libgen.la 憑證在
+        # verify=True 下有效；唯一在 verify=True 失敗的 libgen.rocks 是自簽憑證
+        # 且內容已是法院查封頁，關閉驗證只會讓查封頁被當成書庫。
         async with httpx.AsyncClient(
             headers={"User-Agent": self.USER_AGENT},
             timeout=8.0,
-            verify=False,
             follow_redirects=True
         ) as client:
             # 依序執行候選詞檢索

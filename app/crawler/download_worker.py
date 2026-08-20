@@ -334,7 +334,9 @@ class DownloadWorker:
                 headers["Range"] = f"bytes={start_byte}-"
 
             try:
-                async with httpx.AsyncClient(headers=headers, timeout=60.0, follow_redirects=True, verify=False) as client:
+                # TLS 驗證維持開啟：這是真正落檔到使用者硬碟的那條連線。
+                # 關閉驗證等於讓中間人決定使用者實際收到的位元組。
+                async with httpx.AsyncClient(headers=headers, timeout=60.0, follow_redirects=True) as client:
                     async with client.stream("GET", direct_url) as resp:
                         if resp.status_code in (503, 429, 502, 504):
                             last_error = RuntimeError(f"鏡像節點繁忙回應 HTTP {resp.status_code}")

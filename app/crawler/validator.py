@@ -36,10 +36,12 @@ class MirrorValidator:
 
         start_time = time.time()
 
+        # TLS 驗證維持開啟：本類專職是「審查一個鏡像能不能信任」，
+        # 若在此關閉驗證，一個自簽憑證的被接管網域會直接通過預檢、
+        # 被標成 verified 並進入正式鏡像清單。
         async with httpx.AsyncClient(
             headers={"User-Agent": self.USER_AGENT},
             timeout=8.0,
-            verify=False,
             follow_redirects=True
         ) as client:
             # 1. 探測 Gateway (如 library.lol)

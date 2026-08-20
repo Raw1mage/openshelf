@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import time
 import uuid
@@ -11,6 +12,8 @@ from app.models.catalog import (
     CollectionDetailRead, CollectionItemRead, CategoryRead, CategoryTreeNode
 )
 from app.db.categories import DEFAULT_CATEGORY_TREE, infer_categories_for_work
+
+log = logging.getLogger(__name__)
 
 
 DEFAULT_LIBGEN_MIRRORS: List[Dict[str, Any]] = [
@@ -32,70 +35,97 @@ DEFAULT_LIBGEN_MIRRORS: List[Dict[str, Any]] = [
         "validation_status": "verified",
         "adapter_type": "libgen_li"
     },
+    # 以下四項實測已死（2026-08-20，見 BR-20260820_111523）。
+    # 刻意保留條目而非刪除：使用者在設定頁仍看得到這些網域及其死因，
+    # 而不是發現它們無聲無息消失；同時 enabled=False + validation_status="offline"
+    # 確保它們不會進入 get_active_libgen_mirror_urls() 的輸出。
     {
         "url": "https://libgen.rocks",
-        "enabled": True,
-        "note": "Libgen.li 系列備用節點",
+        "enabled": False,
+        "note": "已失效：自簽憑證 + Domain Seizure Notice（法院查封，2026-08-20 實測）",
         "is_default": True,
         "priority": 3,
-        "validation_status": "verified",
+        "validation_status": "offline",
         "adapter_type": "libgen_li"
     },
     {
         "url": "https://libgen.gs",
-        "enabled": True,
-        "note": "Libgen.li 系列分流節點",
+        "enabled": False,
+        "note": "已失效：DNS NXDOMAIN（域名不存在，2026-08-20 實測）",
         "is_default": True,
         "priority": 4,
-        "validation_status": "verified",
+        "validation_status": "offline",
         "adapter_type": "libgen_li"
     },
     {
         "url": "https://libgen.pm",
-        "enabled": True,
-        "note": "Libgen.pm 系列分流節點",
+        "enabled": False,
+        "note": "已失效：DNS NXDOMAIN（域名不存在，2026-08-20 實測）",
         "is_default": True,
         "priority": 5,
-        "validation_status": "verified",
+        "validation_status": "offline",
         "adapter_type": "libgen_li"
     },
     {
         "url": "https://libgen.is",
         "enabled": True,
-        "note": "Libgen.is 傳統經典鏡像",
+        "note": "Libgen.is 傳統經典鏡像（DNS 可解析但 TCP 逾時，存活狀態 UNDECIDABLE）",
         "is_default": True,
         "priority": 6,
-        "validation_status": "verified",
+        "validation_status": "unverified",
         "adapter_type": "libgen_is"
     },
     {
         "url": "https://libgen.rs",
         "enabled": True,
-        "note": "Libgen.rs 官方鏡像",
+        "note": "Libgen.rs 官方鏡像（未實測）",
         "is_default": True,
         "priority": 7,
-        "validation_status": "verified",
+        "validation_status": "unverified",
         "adapter_type": "libgen_is"
     },
     {
         "url": "https://libgen.st",
         "enabled": True,
-        "note": "Libgen.st 官方鏡像",
+        "note": "Libgen.st 官方鏡像（未實測）",
         "is_default": True,
         "priority": 8,
-        "validation_status": "verified",
+        "validation_status": "unverified",
         "adapter_type": "libgen_is"
     },
     {
         "url": "http://library.lol",
-        "enabled": True,
-        "note": "Library.lol 直鏈下載 Gateway",
+        "enabled": False,
+        "note": "已失效：HTTP 200 但內容為 Domain Seizure Notice（查封，2026-08-20 實測）",
         "is_default": True,
         "priority": 9,
-        "validation_status": "verified",
+        "validation_status": "offline",
         "adapter_type": "direct_gateway"
     }
 ]
+
+# 實測已死的網域（2026-08-20，見 BR-20260820_111523）。
+#
+# 為何需要這張清單而不是只從 DEFAULT_LIBGEN_MIRRORS 刪掉：
+# get_libgen_mirrors() 若讀到 DB 裡已寫入的 libgen_mirrors setting，會原樣回傳
+# 那份資料，完全不經過 DEFAULT_LIBGEN_MIRRORS。改常數只能修到「尚未寫入設定」
+# 的新安裝；**既存使用者的 DB 裡那四個死鏡像仍標著 verified、仍會被取用**。
+# 故在讀取側以黑名單過濾，兩條路徑（常數 / DB）都生效。
+#
+# 刻意不在讀取時改寫 DB：默默重寫使用者資料是另一種靈異；過濾是可逆的，
+# 使用者若確認某網域復活，從這張清單拿掉即可。
+KNOWN_DEAD_MIRROR_HOSTS: List[str] = [
+    "libgen.rocks",   # 自簽憑證 + <title>Domain Seizure Notice</title>（法院查封）
+    "libgen.gs",      # DNS NXDOMAIN
+    "libgen.pm",      # DNS NXDOMAIN
+    "library.lol",    # HTTP 200 但 body 為 Domain Seizure Notice（查封）
+]
+
+
+def is_known_dead_mirror(url: str) -> bool:
+    """判斷一個鏡像 URL 是否屬於實測已死的網域。"""
+    low = (url or "").lower()
+    return any(host in low for host in KNOWN_DEAD_MIRROR_HOSTS)
 
 
 class CatalogDAO:
@@ -773,14 +803,27 @@ class CatalogDAO:
         """讀取已設定之 Libgen 鏡像清單（若未設定則回傳預設清單）。"""
         raw = self.get_setting("libgen_mirrors")
         if not raw:
+            # 尚未設定：正常初始態，靜默回退。
             return [dict(m) for m in DEFAULT_LIBGEN_MIRRORS]
         try:
             import json
             data = json.loads(raw)
             if isinstance(data, list) and len(data) > 0:
                 return data
-        except Exception:
-            pass
+            # 解析成功但形狀不對（非 list 或空 list）——使用者資料實際存在卻不可用，
+            # 與「尚未設定」是完全不同的狀態，不得共用同一個靜默輸出。
+            log.warning(
+                "libgen_mirrors 設定內容形狀不正確（type=%s len=%s），已回退至預設清單",
+                type(data).__name__,
+                len(data) if hasattr(data, "__len__") else "n/a",
+            )
+        except Exception as exc:
+            # JSON 損毀：使用者的鏡像設定實際存在但讀不出來。靜默回退會讓
+            # 「設定損毀」與「尚未設定」長得一模一樣，兩者都變成「預設清單全開」。
+            log.warning(
+                "libgen_mirrors 設定解析失敗，已回退至預設清單：%s: %s",
+                type(exc).__name__, exc,
+            )
         return [dict(m) for m in DEFAULT_LIBGEN_MIRRORS]
 
     def save_libgen_mirrors(self, mirrors: List[Dict[str, Any]]) -> None:
@@ -812,12 +855,32 @@ class CatalogDAO:
             if adapter_types and m.get("adapter_type") not in adapter_types:
                 continue
             url = m.get("url", "").rstrip("/")
-            if url:
-                active.append(url)
+            if not url:
+                continue
+            # 既存 DB 裡的死鏡像可能仍標著 verified（寫入時它們還活著），
+            # 在此過濾才能同時覆蓋常數路徑與 DB 路徑。
+            if is_known_dead_mirror(url):
+                log.debug("跳過實測已死的鏡像（見 BR-20260820_111523）: %s", url)
+                continue
+            active.append(url)
 
         if not active:
-            # 安全防線：若無任何通過驗證之自訂鏡像，回傳預設啟用鏡像
-            active = [m["url"].rstrip("/") for m in DEFAULT_LIBGEN_MIRRORS if m.get("enabled", True)]
+            # 安全防線：若無任何通過驗證之鏡像。
+            #
+            # 此路徑先前回傳「所有 enabled 的預設鏡像」且**完全不看
+            # validation_status**，等於繞過驗證閘：「驗證失敗」與「尚未驗證」
+            # 共用同一個輸出，而且那個輸出是「全部放行」。改為仍套用
+            # verified 與死鏡像過濾，並在真的走到這裡時大聲記錄。
+            active = [
+                m["url"].rstrip("/")
+                for m in DEFAULT_LIBGEN_MIRRORS
+                if m.get("enabled", True)
+                and m.get("validation_status") == "verified"
+                and not is_known_dead_mirror(m.get("url", ""))
+            ]
+            log.warning(
+                "無任何通過驗證的鏡像，已回退至預設清單中已驗證且非已知死亡的鏡像：%s",
+                active or "（空，無可用鏡像）",
+            )
         return active
-
 
