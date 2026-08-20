@@ -95,6 +95,100 @@ app/pipeline/ingest.py:174   （同上）
 CONTROL grep 'zzz_not_a_dir' app/  →  0 命中（rc=1），證明上面的命中不是 pattern 太寬
 ```
 
+### ⬆ 2026-08-21 追加：上面這五個引用點已逐點判定（原「沒驗證的 #1」已結案）
+
+由 subagent `ses_fdf669310` 唯讀調查，dispatcher 覆核控制組後採納。
+**結論推翻了本 BR 原本的部分寫法**（見下方「本節推翻了什麼」）：
+
+| 引用點 | 所在函式 | 在 event loop 上？ | 真 IO 還是路徑拼接 |
+|---|---|---|---|
+| `routes.py:122` | `get_raw_file` (`routes.py:84`，**sync def**) | **否 — threadpool** | **純 `Path.__truediv__` 拼接，零 syscall** |
+| `manager.py:15` | `StorageManager.__init__` | — | 純拼接 |
+| **`manager.py:22`** | `ensure_directories`（`__init__:17` 無條件呼叫） | 否（threadpool） | **真 IO — 見下節，每請求一次** |
+| `ingest.py:84` | `ingest_bytes` (`ingest.py:41`) | **否** — 唯一呼叫者 `routes.py:168-169` 已包 `run_in_threadpool` | 該行拼接；`ingest.py:85` `convert_to_pdf` 才是真寫入 |
+| **`ingest.py:174`** | `process_file` (`ingest.py:128`) | **是 ⚠** | `ingest.py:175` `convert_to_pdf` + `ingest.py:198` `save_parsed_markdown` **都在 event loop 上寫 NFS** |
+
+**唯一在 event loop 上的 `parsed` 寫入是 `ingest.py:174` 那條**，呼叫鏈：
+
+```
+ingest.py:174  process_file (sync，重量級)
+  ← download_worker.py:739   直接呼叫，未包 run_in_threadpool / to_thread   ★漏網點
+  ← download_worker.py:626   async def _execute_download_with_resume
+  ← download_worker.py:614   async def _process_queue
+  ← download_worker.py:199   loop.create_task(...)
+  ← main.py:26-27            lifespan → worker.start()
+  最上層 = uvicorn event loop 上的 background asyncio task
+```
+
+`process_file` 一次呼叫在 event loop 上做的同步工作：`compute_file_hashes` 全檔讀（raw/NFS）、
+`PDFExtractor.extract` / OCR（CPU-bound 數十秒）、`convert_to_pdf` 寫 NFS、
+`save_parsed_markdown` 寫 NFS、9 次 SQLite 寫。
+
+**控制組（證明 `739 未包` 不是 grep 壞掉）**：同次 grep `run_in_threadpool|to_thread` 對全 `app/`
+命中 **17 行**（`crawler_routes:69,257`、`category_routes:55,59,101`、`settings_routes:65,105`、
+`routes:168`、`libgen_live`、`validator`）⇒ 專案**會**用它，`download_worker.py:739` 是漏網的例外。
+負控制組 `zzz_*_zzz` 每批 rc=1 / 0 行。
+
+### ⚠ 新發現：每一個 API 請求都對 NFS 下一次 `os.mkdir`
+
+**這格不在原本任何一張 BR 裡，且影響範圍遠大於下載路徑。**
+
+`StorageManager` **不是** module-level singleton，每次 `Depends` 都新建，而 `__init__:17`
+無條件呼叫 `ensure_directories()`：
+
+```
+routes.py:17-18   get_storage()  → StorageManager()            每次 Depends 新建
+db/engine.py:24   DatabaseEngine.__init__ 在 db_path is None 時 也新建 StorageManager()
+  ⇒ Depends(get_dao) / Depends(get_search) → CatalogDAO()/SearchEngine()
+                                            → DatabaseEngine() → StorageManager()
+                                            → ensure_directories() → mkdir on NFS
+```
+
+`DatabaseEngine._bootstrapped_paths`（`engine.py:19`）與 `CatalogDAO._bootstrapped_paths`
+（`dao.py:164`）**只擋 schema/migration，完全不擋 `ensure_directories`**。
+
+**`exist_ok=True` 不會省掉 syscall** —— `/usr/lib/python3.12/pathlib.py:1313` 是
+先無條件 `os.mkdir(2)` 再 `except OSError` 吞 `EEXIST`。
+
+實測（`DATA_DIR` 指到 scratch，monkeypatch `Path.mkdir` 計數）：
+
+```
+DEP=get_storage    mkdir_total=5  mkdir_on_parsed=1
+DEP=get_dao        mkdir_total=3  mkdir_on_parsed=1
+DEP=get_search     mkdir_total=3  mkdir_on_parsed=1
+第二輪（測有無快取）
+DEP=get_storage#2  mkdir_total=3  mkdir_on_parsed=1   ← 沒有快取，照做
+DEP=get_dao#2      mkdir_total=3  mkdir_on_parsed=1
+DEP=get_search#2   mkdir_total=3  mkdir_on_parsed=1
+NEGCTL 純 exists() 後 mkdir_total=0   ← 有鑑別力，不是恆回 1
+```
+
+推論到線上：
+
+- `GET /api/search` → `Depends(get_search)` → **每請求 1 次 `os.mkdir("/data/parsed")` NFS syscall**
+- `GET /api/works/{id}/content` → `get_storage` + `get_dao` → **每請求 2 次**
+- 執行位置：sync 相依項由 `fastapi/dependencies/utils.py:676` 一律 `await run_in_threadpool(call, ...)`
+  送進 threadpool，**與端點是否 async 無關** ⇒ 不在 event loop 上，**但吃 anyio threadpool 名額**
+  （實測 `total_tokens=40`）。
+- 唯一在 event loop 上跑的 `ensure_directories` 是 `main.py:22-23`（lifespan，啟動時一次）。
+
+**⇒ 風險形狀是「threadpool 飽和」而非「event loop 卡死」。** NFS 一次 stall，40 個並發請求的
+相依項解析全部堵在 `os.mkdir` 上，名額耗盡後所有 sync 路由（含 `/api/search`）一起排隊。
+**表徵與 event-loop 卡死幾乎不可區分，但根因不同、修法也不同。**
+
+### 本節推翻了什麼（dispatcher 自己記，不埋在腳註）
+
+1. **dispatcher 把 `routes.py:122` 當成 IO —— 錯。** 那行只是字串拼接。同區塊的
+   `routes.py:123 .exists()` / `routes.py:125 convert_to_pdf` 才是真 IO，且**只在 MOBI/AZW
+   預覽模式**才走到，整個路由又是 sync def ⇒ threadpool。**這格對搜尋延遲沒有解釋力。**
+2. **dispatcher 猜 `manager.py:22` 可能每請求跑 —— 對，而且比猜的更糟**（連完全不碰檔案的
+   `/api/search` 都中招）。
+3. **「parsed 寫入量遠小於 raw，風險等級不同」—— 部分推翻。** 位元組量小，但**次數不小**：
+   `save_parsed_markdown` 在 `ingest.py:106` 與 `ingest.py:198` 對**每一本**入庫書都寫 `.md`
+   （不只 PDF 轉檔）；讀側 `routes.py:79 get_parsed_content` 每次 `/works/{id}/content` 都對 NFS
+   做 `resolve_path` + `exists` + 全檔讀。加上每請求 mkdir ——
+   **`parsed` 的 NFS syscall 頻率其實高於 `raw`，並列不算誤導，反而低估了 parsed。**
+
 ## 為何 Severity 不是「高」——這格是本 BR 最重要的判斷
 
 **理論機制成立，但歷史觀察到的尖峰形狀不符合它的預測。**
