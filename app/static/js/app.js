@@ -358,11 +358,21 @@ function initEventListeners() {
   });
 }
 
-// 統一聚合搜尋核心（同時並行查詢 本地書庫 + 全網公網鏡像）
+// ===== 統一聚合搜尋核心（漸進式渲染）=====
+// 本地與公網兩條非同步流各自獨立落地：本地一回來立刻渲染，公網稍後合併「追加」進列表。
+// 硬性要求：公網的三種狀態（檢索中 / 完成但 0 筆 / 檢索失敗）在畫面上必須長得不一樣，
+// 不得共用同一個輸出——這正是舊版整頁 spinner + 空 catch 的病灶。
+let searchRequestId = 0;
+let activeSearch = null;
+
+// 競態守門：使用者連打搜尋時，舊請求的回應一律不得寫入畫面。
+function isStaleSearch(state) {
+  return !state || state.reqId !== searchRequestId || activeSearch !== state;
+}
+
 async function handleSearch() {
   const query = document.getElementById("searchInput").value.trim();
   const bookList = document.getElementById("bookList");
-  const totalCountEl = document.getElementById("totalCount");
   const resultsHeader = document.getElementById("resultsHeader");
   const selectAllCheckbox = document.getElementById("selectAllCheckbox");
 
@@ -381,96 +391,222 @@ async function handleSearch() {
   selectAllCheckbox.checked = false;
   selectedMd5s.clear();
   updateBatchBar();
+  currentResults = [];
+  renderedCardSigByMd5.clear();
+
+  const state = {
+    reqId: ++searchRequestId,
+    query,
+    page: currentPage,
+    filters: { format: currentFilters.format, language: currentFilters.language },
+    local: { status: "pending", items: [], error: null },
+    remote: { status: "pending", items: [], error: null },
+    filteredRemote: [],
+    localPainted: false
+  };
+  activeSearch = state;
 
   bookList.innerHTML = `
-    <div class="search-loading-box">
+    <div class="search-loading-box" data-search-phase="local">
       <div class="spinner-ring"></div>
-      <p class="search-loading-text">🔍 正在統一檢索本地書庫與全網公網鏡像...</p>
+      <p class="search-loading-text">🔍 正在檢索本地書庫…</p>
     </div>
   `;
 
-  let localItems = [];
-  let remoteItems = [];
+  // 兩條流各自獨立推進，刻意不 await——本地不必等公網
+  runLocalSearch(state);
+  runRemoteSearch(state);
+}
 
-  const localPromise = (async () => {
-    try {
-      const params = new URLSearchParams({
-        q: query,
-        format: currentFilters.format,
-        language: currentFilters.language,
-        page: currentPage,
-        page_size: 50
-      });
-      const res = await fetch(`${BASE_PATH}/api/search?${params}`);
-      if (res.ok) {
-        const data = await res.json();
-        localItems = data.items || [];
-      }
-    } catch (e) {}
-  })();
+async function runLocalSearch(state) {
+  try {
+    const params = new URLSearchParams({
+      q: state.query,
+      format: state.filters.format,
+      language: state.filters.language,
+      page: state.page,
+      page_size: 50
+    });
+    const res = await fetch(`${BASE_PATH}/api/search?${params}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (isStaleSearch(state)) return;
+    state.local.items = data.items || [];
+    state.local.status = "done";
+  } catch (e) {
+    if (isStaleSearch(state)) return;
+    state.local.status = "error";
+    state.local.error = (e && e.message) ? e.message : String(e);
+    state.local.items = [];
+  }
+  if (isStaleSearch(state)) return;
+  renderSearchProgress(state, "local");
+}
 
-  const remotePromise = (async () => {
-    try {
-      const res = await fetch(`${BASE_PATH}/api/crawler/search?q=${encodeURIComponent(query)}`);
-      if (res.ok) {
-        const data = await res.json();
-        remoteItems = data.items || [];
-      }
-    } catch (e) {}
-  })();
+async function runRemoteSearch(state) {
+  try {
+    const res = await fetch(`${BASE_PATH}/api/crawler/search?q=${encodeURIComponent(state.query)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (isStaleSearch(state)) return;
+    state.remote.items = data.items || [];
+    state.remote.status = "done";
+  } catch (e) {
+    if (isStaleSearch(state)) return;
+    state.remote.status = "error";
+    state.remote.error = (e && e.message) ? e.message : String(e);
+    state.remote.items = [];
+  }
+  if (isStaleSearch(state)) return;
+  state.filteredRemote = filterRemoteItems(state.remote.items, state.local.items, state.filters);
+  renderSearchProgress(state, "remote");
+}
 
-  await Promise.all([localPromise, remotePromise]);
-
-  // 合併與去重：若公網資源中已有本地收錄 (以 MD5 比對)，優先以本地狀態呈現
-  const localMd5s = new Set(localItems.map(i => (i.md5 || "").toLowerCase()).filter(Boolean));
+// 合併與去重：若公網資源中已有本地收錄 (以 MD5 比對)，優先以本地狀態呈現（語意與舊版一致）
+function filterRemoteItems(remoteItems, localItems, filters) {
+  const localMd5s = new Set((localItems || []).map(i => (i.md5 || "").toLowerCase()).filter(Boolean));
   const filteredRemote = [];
 
-  for (const r of remoteItems) {
+  for (const r of remoteItems || []) {
     const md5 = (r.md5 || "").toLowerCase();
     if (md5 && localMd5s.has(md5)) {
       continue; // 已在本地項目中，免重複顯示
     }
-    if (currentFilters.format !== "all" && r.format !== currentFilters.format) {
+    if (filters.format !== "all" && r.format !== filters.format) {
       continue;
     }
-    if (currentFilters.language !== "all") {
-      if (currentFilters.language === "zh" && !r.language.toLowerCase().includes("zh") && !r.language.toLowerCase().includes("chinese")) {
+    if (filters.language !== "all") {
+      const lang = (r.language || "").toLowerCase();
+      if (filters.language === "zh" && !lang.includes("zh") && !lang.includes("chinese")) {
         continue;
       }
-      if (currentFilters.language === "en" && !r.language.toLowerCase().includes("en") && !r.language.toLowerCase().includes("english")) {
+      if (filters.language === "en" && !lang.includes("en") && !lang.includes("english")) {
         continue;
       }
     }
     filteredRemote.push(r);
   }
+  return filteredRemote;
+}
 
-  const combinedItems = [...localItems, ...filteredRemote];
-  currentResults = combinedItems;
-  resultsHeader.style.display = "flex";
+// ---- 漸進式渲染：本地先落地，公網後到者追加 ----
+function renderSearchProgress(state, phase) {
+  const bookList = document.getElementById("bookList");
+  const resultsHeader = document.getElementById("resultsHeader");
 
-  const totalCount = combinedItems.length;
-  const localCount = localItems.length;
-  const remoteCount = filteredRemote.length;
+  if (phase === "local") {
+    // 若公網比本地先回來（罕見但可能），此時才拿得到正確的 local md5 集合，需重算去重
+    if (state.remote.status === "done") {
+      state.filteredRemote = filterRemoteItems(state.remote.items, state.local.items, state.filters);
+    }
+    currentResults = [...state.local.items, ...state.filteredRemote];
+    resultsHeader.style.display = "flex";
+    paintSearchList(state);
+    state.localPainted = true;
+  } else {
+    currentResults = [...state.local.items, ...state.filteredRemote];
+    if (!state.localPainted) {
+      // 本地都還沒回來，先不動列表主體，只更新狀態列（避免公網內容搶先霸佔畫面）
+      updateSearchStatusLine(state);
+      return;
+    }
+    if (currentSort === "relevance" && state.filteredRemote.length > 0) {
+      // relevance 排序＝本地優先、其餘維持原序，故「追加」與全量重排結果等價，
+      // 但不會把使用者正在看／已勾選／已展開的本地卡片抽掉重畫。
+      appendRemoteCards(state);
+    } else {
+      // 其他排序需與本地項目交錯，無法單純追加，只能重排整批
+      paintSearchList(state);
+    }
+  }
 
-  if (totalCount === 0) {
-    totalCountEl.innerText = `查無符合書籍`;
-    bookList.innerHTML = `
-      <div style="text-align:center; padding: 3rem; background: var(--bg-secondary); border-radius: var(--radius);">
-        <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 1rem;">📭 本地與公網鏡像均未找到符合之書籍</p>
-        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">建議嘗試更換關鍵字、英文書名或 ISBN 再次檢索，或直接手動上傳檔案。</p>
-        <button class="btn btn-primary" onclick="document.getElementById('openUploadBtn').click()">➕ 手動上傳檔案入庫</button>
-      </div>
-    `;
+  updateSearchStatusLine(state);
+  updateSelectAllVisibility(state);
+}
+
+function paintSearchList(state) {
+  const bookList = document.getElementById("bookList");
+  if (currentResults.length > 0) {
+    applySortAndRender();
     return;
   }
+  // 零結果：必須等兩邊都落地才敢說「查無」。本地 0 筆 ≠ 查無。
+  bookList.innerHTML = buildEmptyOrWaitingHtml(state);
+}
 
-  totalCountEl.innerText = `聚合找到 ${totalCount} 本書籍（💾 本地已收錄 ${localCount} 本，🌐 公網可收書 ${remoteCount} 本）`;
-  
-  if (remoteCount > 0) {
-    selectAllCheckbox.style.display = "inline-block";
+function appendRemoteCards(state) {
+  const bookList = document.getElementById("bookList");
+  const placeholder = bookList.querySelector("[data-search-placeholder]");
+  if (placeholder) placeholder.remove();
+
+  const html = state.filteredRemote.map(item => renderLiveBookCard(item)).join("");
+  bookList.insertAdjacentHTML("beforeend", html);
+  bindCheckboxEvents();
+  restoreSelectionState();
+  snapshotRenderedCardSignatures();
+}
+
+// 三態必須在畫面上可區分：公網「檢索中」／「完成但 0 筆」／「檢索失敗」
+function updateSearchStatusLine(state) {
+  const totalCountEl = document.getElementById("totalCount");
+  const localCount = state.local.items.length;
+  const remoteCount = state.filteredRemote.length;
+  const parts = [];
+
+  if (state.local.status === "error") {
+    parts.push(`<span style="color: var(--danger, #f87171);">⚠️ 本地書庫檢索失敗（${escapeHtml(state.local.error || "未知錯誤")}）</span>`);
+  } else if (state.local.status === "pending") {
+    parts.push(`<span style="color: var(--text-muted);">💾 本地檢索中…</span>`);
+  } else {
+    parts.push(`💾 本地已收錄 ${localCount} 本`);
   }
 
-  applySortAndRender();
+  if (state.remote.status === "pending") {
+    parts.push(`<span data-remote-state="pending" style="color: var(--text-muted);">🌐 公網鏡像檢索中<span class="dot-ellipsis">…</span></span>`);
+  } else if (state.remote.status === "error") {
+    parts.push(`<span data-remote-state="error" style="color: var(--danger, #f87171);">⚠️ 公網鏡像檢索失敗（${escapeHtml(state.remote.error || "未知錯誤")}）</span>`);
+  } else {
+    parts.push(`<span data-remote-state="done">🌐 公網可收書 ${remoteCount} 本</span>`);
+  }
+
+  const settled = state.local.status !== "pending" && state.remote.status !== "pending";
+  const prefix = settled
+    ? (currentResults.length > 0 ? `聚合找到 ${currentResults.length} 本書籍　` : `查無符合書籍　`)
+    : `已找到 ${currentResults.length} 本　`;
+
+  totalCountEl.innerHTML = prefix + parts.join(" ・ ");
+}
+
+function updateSelectAllVisibility(state) {
+  const selectAllCheckbox = document.getElementById("selectAllCheckbox");
+  if (!selectAllCheckbox) return;
+  selectAllCheckbox.style.display = state.filteredRemote.length > 0 ? "inline-block" : "none";
+}
+
+// 列表主體為空時的畫面：公網仍在跑 → 等待態；兩邊都結束 → 真正的查無／失敗態
+function buildEmptyOrWaitingHtml(state) {
+  if (state.remote.status === "pending") {
+    return `
+      <div class="search-loading-box" data-search-placeholder data-search-phase="remote">
+        <div class="spinner-ring"></div>
+        <p class="search-loading-text">💾 本地書庫尚無符合書籍，🌐 公網鏡像檢索中…</p>
+        <p style="color: var(--text-muted); font-size: 0.85rem;">公網鏡像回應較慢，找到的結果會自動出現在此處。</p>
+      </div>
+    `;
+  }
+
+  const failedNote = (state.remote.status === "error" || state.local.status === "error")
+    ? `<p style="color: var(--danger, #f87171); font-size: 0.9rem; margin-bottom: 1rem;">⚠️ ${state.local.status === "error" ? "本地書庫" : "公網鏡像"}檢索失敗，結果可能不完整——可稍後重試。</p>`
+    : "";
+
+  return `
+    <div data-search-placeholder style="text-align:center; padding: 3rem; background: var(--bg-secondary); border-radius: var(--radius);">
+      <p style="font-size: 1.1rem; color: var(--text-secondary); margin-bottom: 1rem;">📭 本地與公網鏡像均未找到符合之書籍</p>
+      ${failedNote}
+      <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">建議嘗試更換關鍵字、英文書名或 ISBN 再次檢索，或直接手動上傳檔案。</p>
+      <button class="btn btn-primary" onclick="document.getElementById('openUploadBtn').click()">➕ 手動上傳檔案入庫</button>
+    </div>
+  `;
 }
 
 function applySortAndRender() {
@@ -2917,6 +3053,4 @@ document.addEventListener("click", (e) => {
   }
 });
 document.addEventListener("scroll", closeAllDropdowns, true);
-
-
 
