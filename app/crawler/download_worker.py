@@ -170,19 +170,26 @@ class DownloadWorker:
         authors: Optional[str] = None,
         extension: str = "pdf",
         mirror_links: Optional[List[str]] = None,
-        publication_year: Optional[int] = None
+        publication_year: Optional[int] = None,
+        autostart: bool = True
     ) -> DownloadJob:
         """將書籍加入下載佇列。
 
-        ⚠ 副作用（BR-20260820_143000 判準 4，目前為 by-design）：
-        本方法尾端**無條件**呼叫 `self.start()`。在有 running event loop 的
-        環境下（含 `TestClient`），這會立刻 `create_task(_process_queue())`
-        並開始對公網鏡像發出真實 HTTP 請求；在無 loop 的同步環境下則不會
-        啟動，任務停留在 `queued`（此時 `start()` 會 log.warning 出聲）。
+        ⚠ 副作用（BR-20260820_143000 判準 4）：
+        `autostart=True`（**預設**）時本方法尾端呼叫 `self.start()`。在有
+        running event loop 的環境下（含 `TestClient`），這會立刻
+        `create_task(_process_queue())` 並開始對公網鏡像發出真實 HTTP 請求；
+        在無 loop 的同步環境下則不會啟動，任務停留在 `queued`
+        （此時 `start()` 會 log.warning 出聲）。
 
-        測試若只想驗證欄位傳遞契約而不要真實下載，需自行停掉背景迴圈
-        （例：`monkeypatch.setattr(worker, "start", lambda: None)`）。
-        目前沒有 opt-out 參數——是否提供屬產品決策，未在本包變更。
+        `autostart=False` 時只做「入列」——job 進 `self.jobs`、進 `self.queue`、
+        狀態為 `queued`——但**完全不碰背景迴圈**：不呼叫 `start()`、不建立
+        `_worker_task`、不發出任何對外請求，也不會因為無 loop 而 log.warning
+        （沒有嘗試啟動，就沒有啟動失敗可報）。之後可由呼叫端在自己選定的時機
+        呼叫 `start()` 或 `start_job()` 真正開跑。
+
+        兩者的差異必須可觀察，否則「參數生效」與「參數被忽略」會共用同一個
+        輸出；`tests/test_download_worker_enqueue_autostart.py` 鎖住這兩個方向。
         """
         for j in self.jobs.values():
             if j.md5 == md5.lower() and j.status in ("queued", "downloading", "paused", "completed"):
@@ -201,7 +208,8 @@ class DownloadWorker:
         self.jobs[job_id] = job
         self._save_jobs_to_disk()
         self.queue.put_nowait(job)
-        self.start()
+        if autostart:
+            self.start()
         return job
 
     def start_job(self, job_id: str) -> Optional[DownloadJob]:
