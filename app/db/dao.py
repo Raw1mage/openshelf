@@ -1,9 +1,11 @@
 import logging
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple, Dict, Any
+from pathlib import Path
+from typing import List, Optional, Set, Tuple, Dict, Any
 from app.db.engine import DatabaseEngine
 from app.models.catalog import (
     WorkCreate, WorkDetailRead, WorkRead, IdentifierRead,
@@ -149,10 +151,39 @@ class CatalogDAO:
         ],
     }
 
+    # 已完成一次性引導的 DB 路徑（process 層級）。
+    #
+    # 為何需要：`Depends(get_dao)` 讓**每個 API 請求**都新建一次 CatalogDAO，
+    # 於是 `apply_column_migrations()` 與 `seed_categories_if_needed()` 也每請求各跑一次。
+    # 這兩者都是**寫入路徑**（ALTER / CREATE INDEX / INSERT OR IGNORE），需要 SQLite writer 鎖。
+    # 實測：writer 鎖被下載入庫持有時，`seed_categories_if_needed()` 單次阻塞 18.2 秒
+    # （同一時刻 `DatabaseEngine()` 只要 69ms），這就是 /api/collections 偶發 20-27s 的根因。
+    #
+    # 這兩個步驟本質是**啟動期引導**而非請求期工作：schema 遷移與種子資料在 process
+    # 生命週期內只需成立一次。跳過重跑不改變任何可觀察結果，只消除鎖爭用。
+    _bootstrapped_paths: Set[str] = set()
+    _bootstrap_lock = threading.Lock()
+
     def __init__(self, engine: DatabaseEngine = None):
         self.engine = engine or DatabaseEngine()
-        self.apply_column_migrations()
-        self.seed_categories_if_needed()
+        self._ensure_bootstrapped()
+
+    def _ensure_bootstrapped(self) -> bool:
+        """每個 DB 路徑只在本 process 執行一次遷移與種子，回傳是否實際執行。
+
+        回傳 bool 而非 None，是為了讓「跳過」與「執行」可被測試區分——
+        兩者若共用同一個輸出，就無法證明這個守衛真的生效。
+        """
+        db_path = Path(self.engine.db_path)
+        key = str(db_path)
+        with CatalogDAO._bootstrap_lock:
+            # 檔案不存在代表被外部刪除（測試常見），必須重新引導。
+            if key in CatalogDAO._bootstrapped_paths and db_path.exists():
+                return False
+            self.apply_column_migrations()
+            self.seed_categories_if_needed()
+            CatalogDAO._bootstrapped_paths.add(key)
+            return True
 
     # 依賴新增欄位的索引：必須在 ALTER 補完欄位之後才能建立，
     # 否則對舊 DB 會以 "no such column" 中斷啟動。
