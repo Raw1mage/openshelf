@@ -91,6 +91,49 @@ handler 只在測試 fixture 裡 `monkeypatch.setattr(worker, "start", lambda: N
 
 ## 沒驗證的
 
-- **未量 production runtime 下 log level 是否真的會輸出 warning**。app 的 logging 設定未查。
-  同一格在 BR-124320 的 Q5 也是未驗證面。
-- **未確認是否有其他呼叫點依賴「無 loop 時靜默 pass」這個行為**。改成 warning 前需 grep `\.start()` 全域。
+✅ **下列兩格已於 2026-08-20 補齊（值星官派的 explore 勘查員 + 值星官抽驗），不再是未知：**
+
+- **log level 確實會輸出**。載入 `uvicorn.config.LOGGING_CONFIG` 後，
+  `logging.getLogger("app.crawler.download_worker")` 的 effective level = `WARNING`、`propagate=True`、
+  無自有 handler；`lg.warning(...)` 實測落到 stderr（`captured_stderr='PROBE_WARNING_VISIBLE\n'`）。
+  專案本身無任何 `basicConfig` / `dictConfig`（grep rc=1，控制組 `getLogger` 在 `dao.py` 命中）。
+  ⇒ **判準 1 的 `log.warning` 在 uvicorn 下看得到。**
+- **全域 `.start()` 命中 3 處，沒有任何一處依賴「靜默 pass」語意**（值星官獨立重跑）：
+  ```
+  app/main.py:27                  worker.start()
+  app/crawler/download_worker.py:169   self.start()   # enqueue 尾端，無條件
+  app/crawler/download_worker.py:188   self.start()   # start_job 的 except RuntimeError 分支
+  ```
+  ⇒ **改成 warning 安全。**
+
+## 補充現場（2026-08-20 重驗，行號已位移）
+
+BR 上方引的是 `:132-138`，**當前工作樹是 `:133-140`**（差 1 行，內容逐字相同）。
+`git diff --stat HEAD -- app/crawler/download_worker.py` 無輸出、rc=0；該檔最後一次被改是 `478a9e2`。
+
+**兩態實測（直呼 `DownloadWorker.start`，未實例化、未碰磁碟）**：
+
+```
+NOLOOP: return=None worker_task=None exception=None warnings=0 logs=''
+LOOP  : return=None worker_task_type=Task created=True logs='Using selector: EpollSelector\n'
+```
+
+兩態的**回傳值相同（都是 `None`）**，唯一差別是 `_worker_task` 這個私有屬性——
+呼叫端拿不到任何區分訊號。
+
+**控制組**：
+1. `asyncio.get_running_loop()` 無 loop 時確實 raise `RuntimeError: no running event loop`；
+   有 loop 時回 `_UnixSelectorEventLoop` ⇒ 證明 `except RuntimeError` 抓的就是這條。
+2. logging 通道有鑑別力：同一組 handler 在 LOOP 分支錄到 `'Using selector: EpollSelector'`。
+   **buffer 不是壞的，NOLOOP 的 `''` 是真的沒有任何輸出。**
+3. `grep -c "log.warning\|logger.warning"` 對 `download_worker.py` = **0**（rc=1）；
+   同 pattern 對 `dao.py` = **3**（rc=0）⇒ 專案確實有 warning 慣例，該檔一行都沒有是**缺席**。
+
+**繞過措施仍在**：`tests/test_download_path_year.py:214`
+`monkeypatch.setattr(worker, "start", lambda: None)`，docstring（`:204-207`）明寫
+「TestClient 底下有 running loop，於是會 create_task 真的去打公網鏡像——測試會靜默挂住
+（零輸出，與『跑很久』無法區分）」。production code 一個字未動。
+
+**仍未量的**：
+- 未重現 GROUP C 的 rc=124 hang（未執行會打公網的測試）。那組數據仍是原始回報的轉述。
+- `download_worker.py:92-93` `_save_jobs_to_disk` 尾端另有同型 `except Exception: pass`（本 BR 原未記）。

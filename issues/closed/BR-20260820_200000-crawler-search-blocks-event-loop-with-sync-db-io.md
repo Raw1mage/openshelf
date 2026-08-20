@@ -7,7 +7,18 @@ Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Found-during: handler `ses_fe1e42061ffelY9nWWmlTw3GdZ` 追 BR-124500 後端延遲時的過程發現，
   值星官獨立複核 file:line 後建檔
 
+> ⚠ **本 BR 已復發，範圍不完整（2026-08-20 事後盤查）** — 修復 commit `2e7d665` 只把
+> `_annotate_local_status` 搬進 threadpool（`crawler_routes.py:60`），但**同一條路由 `:55` 的
+> `await crawler.search(q)` 沒搬**，而它內部 `libgen_live.py:277 → :41 → dao.py:930` 仍是同步
+> SQLite 讀，照樣跑在事件迴圈執行緒上。修的是那條路徑上的其中一格，不是那一類。
+> **後續處理見 `issues/BR-20260820_210000-async-routes-sync-io-on-event-loop-family.md`**
+> （族群性缺陷，涵蓋另外 14 個 `async def` 路由與 worker 側）。
+> 本檔維持 closed（它記載的那一格確實已修且已驗），復發部分由 BR-210000 承接。
+
 **Related**:
+- `BR-20260820_210000-async-routes-sync-io-on-event-loop-family`（OPEN）—
+  **本 BR 的復發承接者**。依據：**同一條執行路徑**（`crawler_routes.py:48 live_search`）、
+  **同一種失效類別**（`async def` 內同步 I/O 阻塞事件迴圈）。
 - `BR-20260820_124500-quick-collections-modal-blocking`（PARTIAL）—
   症狀相鄰但**根因不同**。該案是 DB 層鎖爭用，本案是**事件迴圈層**。
   兩者的分水嶺就是本 repo 一直在用的那個判準：
