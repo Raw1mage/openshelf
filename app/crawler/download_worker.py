@@ -8,12 +8,43 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
+import anyio
+import anyio.to_thread
 import httpx
 
 from app.crawler.mirror_resolver import MirrorResolver
 from app.pipeline.ingest import IngestionPipeline
 
 log = logging.getLogger(__name__)
+
+
+# worker 側檔案 I/O 專用的執行緒頃額（BR-20260820_210000 E 節 + BR-20260821_040000）。
+#
+# **為何不用 `run_in_threadpool` / 預設執行緒池**：預設池只有 40 個 token
+# （實測 `current_default_thread_limiter().total_tokens == 40`），而那 40 個同時是
+# **每一個 HTTP 請求的 sync 相依項與 sync 路由**在用的（FastAPI 將 sync 依賴一律
+# 丟進預設池，`fastapi/dependencies/utils.py:676`）。下載寫入落在
+# `hard,timeo=600` 的 NFS 上，一次 stall 就是 60 秒級的持有；若共用預設池，
+# 幾個同時進行的下載就能把整個站的請求路徑餓死——**把 event loop 阻塞換成
+# threadpool 排隊，使用者看到的症狀完全相同**，而那正是本族上一包已記下的風險。
+#
+# 專用 limiter 與預設池**完全隔離**（實測：3 個工作佔住專用 limiter 時，
+# `default.borrowed_tokens == 0`）。上限 4 是刻意的：下載是順序大檔寫入，
+# 再多並行只會讓 NFS 隨機化、並不提升吐吐量。
+#
+# module-scope 建立（無 running loop 時）已實測可行，且同一個物件可跨多個
+# 獨立 event loop 重用（測試每條各自 `asyncio.run` 仍正常）。
+_FILE_IO_LIMITER = anyio.CapacityLimiter(4)
+
+
+async def _run_file_io(func, *args):
+    """將一個同步檔案 I/O 呼叫移出 event loop 執行緒，走專用頃額。
+
+    `abandon_on_cancel` 保持預設（False）：取消時等執行緒把手邊這一步做完。
+    這與改造前的行為一致（同步呼叫本來就不可中斷），且避免「取消後執行緒仍在
+    寫一個已被刪除的檔案」這種難以重現的競合。
+    """
+    return await anyio.to_thread.run_sync(func, *args, limiter=_FILE_IO_LIMITER)
 
 
 class DownloadJob:
@@ -106,6 +137,46 @@ class DownloadWorker:
 
     def _get_part_path(self, job: DownloadJob) -> Path:
         return self.pipeline.storage.raw_dir / f"{job.job_id}_{job.md5}.part"
+
+    @staticmethod
+    def _part_size(part_file: Path) -> int:
+        """回傳 `.part` 檔目前大小；不存在回 **-1**。
+
+        兩態刻意用不同的值而非都回 0：「檔案不存在」與「檔案存在但是空的」
+        在斷點續傳邏輯裡意義不同（前者要從頭下載，後者代表上一次建立了檔但一個
+        byte 都沒拿到），共用同一個輸出會讓兩種情境不可區分。
+
+        **一次 `stat(2)` 取代原本的 `exists()` + `stat()`**。原寫法在 NFS 上是
+        兩次 RPC 往返，且兩次之間檔案可能被刪（TOCTOU）——直接 stat 並接
+        `FileNotFoundError` 兩個問題一起消掉。
+        """
+        try:
+            return part_file.stat().st_size
+        except FileNotFoundError:
+            return -1
+
+    @staticmethod
+    def _remove_part_file(part_file: Path) -> bool:
+        """刪除 `.part` 檔，回傳是否真的刪到了一個檔。
+
+        同樣用一次 `unlink(2)` 取代 `exists()` + `unlink()` 兩次 NFS RPC。
+        回傳 bool 而非 None，是為了讓「檔本來就不在」與「真的刪了一個數百 MB 的檔」
+        可被區分——原寫法的 `except Exception: pass` 把兩者與「權限不足刪不掉」
+        三態全部壓成同一個輸出。
+        """
+        try:
+            part_file.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError as e:
+            # 回退行為不變（不阻斷刪 job），但必須出聲：數百 MB 的殘留檔靜默堆在
+            # NAS 上是真實成本，而原本的 `except Exception: pass` 永遠不會有人知道。
+            log.warning(
+                "下載斷點檔刪除失敗，檔案可能殘留於儲存區：%s: %s | file=%s",
+                type(e).__name__, e, part_file,
+            )
+            return False
 
     def _save_jobs_to_disk(self):
         """將任務狀態持久化寫入磁碟 JSON 檔。"""
@@ -445,7 +516,13 @@ class DownloadWorker:
         return self.start_job(job_id)
 
     def delete_job(self, job_id: str) -> bool:
-        """刪除任務（排隊中、下載中、已暫停或已完成均可刪除），並清除臨時斷點檔案。"""
+        """刪除任務（排隊中、下載中、已暫停或已完成均可刪除），並清除臨時斷點檔案。
+
+        ⚠ **本方法必須在 event loop 執行緒上呼叫**（它會 `task.cancel()`，而
+        asyncio Task 的方法不是 thread-safe）。需要在非 loop 執行緒上刪除時，
+        呼叫 `adelete_job()`——它把數百 MB `.part` 檔的 NFS `unlink` 移出 loop，
+        但把 `task.cancel()` 留在 loop 上。見 `adelete_job` 的說明。
+        """
         job = self.jobs.get(job_id)
         if not job:
             return False
@@ -456,15 +533,56 @@ class DownloadWorker:
             task.cancel()
 
         # 刪除臨時斷點檔案
-        part_file = self._get_part_path(job)
-        if part_file.exists():
-            try:
-                part_file.unlink()
-            except Exception:
-                pass
+        self._remove_part_file(self._get_part_path(job))
 
         del self.jobs[job_id]
         self._save_jobs_to_disk()
+        return True
+
+    async def adelete_job(self, job_id: str) -> bool:
+        """`delete_job` 的 async 版：把 NFS `unlink` 移出 event loop 執行緒。
+
+        **為何不是簡單地把整個 `delete_job` 丟進 threadpool**
+        （這是本方法存在的全部理由，不是風格偏好）：
+        `delete_job` 內含 `task.cancel()`，而 **asyncio Task/Future 的方法不是
+        thread-safe**。實測（Python 3.12）：
+
+            一般模式   跨執行緒 t.cancel()  -> 碰巧生效，cancelled=True
+            debug 模式  跨執行緒 t.cancel()  -> RuntimeError: Non-thread-safe
+                                                  operation invoked on an event loop
+                                                  other than the current one
+                                                  **cancelled=False（取消沒生效）**
+            CONTROL   同 loop 上  t.cancel()  -> 兩種模式都乾淨成功
+
+        一般模式下它「看起來會動」正是最危險的地方：測試會全綠，而實際上那是
+        未定義行為——取消訊號在錯誤的執行緒上進入 loop 的內部狀態機。
+        「下載真的停了」與「取消沒生效但沒人知道」會共用同一個輸出。
+
+        所以這裡拆成兩段：取消與字典操作留在 loop（便宜、純記憶體），
+        **只有真正會卡住的 `unlink` 進執行緒**（數百 MB 檔案在
+        `hard,timeo=600` 的 NFS 上）。
+
+        回傳值與 `delete_job` 完全一致：True = 真的刪了一個 job，
+        False = 找不到該 job。**檔案刪不成功不會變成 False**（同原行為），
+        但會由 `_remove_part_file` log.warning 出聲。
+        """
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+
+        # 必須在 loop 執行緒上，見上方實測。
+        task = self._active_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+
+        # 唯一真正會阻塞的一格：數百 MB 的 .part 檔在 NFS 上 unlink。
+        await _run_file_io(self._remove_part_file, self._get_part_path(job))
+
+        # 上面 await 期間 job 可能已被別的路徑刪掉（例如使用者連點兩次）。
+        # 用 pop 而非 `del`：重複刪除回 False，不拋 KeyError。
+        if self.jobs.pop(job_id, None) is None:
+            return False
+        await _run_file_io(self._save_jobs_to_disk)
         return True
 
     def retry_job(self, job_id: str) -> Optional[DownloadJob]:
@@ -660,7 +778,10 @@ class DownloadWorker:
                 "Referer": f"https://libgen.li/ads.php?md5={job.md5}",
                 "Accept": "*/*"
             }
-            start_byte = part_file.stat().st_size if part_file.exists() else 0
+            # 一次 stat(2) 完成「在不在 + 多大」，並且移出 loop——原寫法是
+            # `exists()` + `stat()` 兩次 NFS RPC 往返，都在 event loop 執行緒上。
+            part_size = await _run_file_io(self._part_size, part_file)
+            start_byte = part_size if part_size > 0 else 0
             if start_byte > 0:
                 headers["Range"] = f"bytes={start_byte}-"
 
@@ -675,7 +796,7 @@ class DownloadWorker:
 
                         if resp.status_code == 416:
                             # 416 Range Not Satisfiable: 檔案已經下載完整
-                            if part_file.exists() and part_file.stat().st_size > 0:
+                            if await _run_file_io(self._part_size, part_file) > 0:
                                 break
                             else:
                                 start_byte = 0
@@ -700,16 +821,28 @@ class DownloadWorker:
                                 job.total_bytes = int(c_len)
 
                         downloaded = start_byte
-                        with open(part_file, mode) as f:
+                        # 開檔、每一次寫入、關檔全部走專用執行緒頃額（E 節主體）。
+                        #
+                        # 刻意保持**逐 chunk** 進出執行緒，而不是把整段下載包進去：
+                        # 後者會讓一個數分鐘的下載**長期佔住一個 token**，把「阻塞 loop」
+                        # 換成「阻塞執行緒池」——那只是把問題搬家。逐 chunk 時每次只持有
+                        # 一次 64KB 寫入的時間，多個下載可以在 4 個 token 上交錯進行。
+                        # 代價是每 64KB 一次執行緒往返（~數十微秒），遠小於 NFS 寫入本身。
+                        f = await _run_file_io(open, part_file, mode)
+                        try:
                             async for chunk in resp.aiter_bytes(chunk_size=65536):
                                 if job.status == "paused" or job.job_id not in self.jobs:
                                     return
-                                f.write(chunk)
+                                await _run_file_io(f.write, chunk)
                                 downloaded += len(chunk)
                                 job.downloaded_bytes = downloaded
                                 if job.total_bytes > 0:
                                     job.progress_percent = int((downloaded / job.total_bytes) * 100)
                                 job.updated_at = datetime.now(timezone.utc).isoformat()
+                        finally:
+                            # 不論正常結束、`return`（暫停/刪除）還是例外，檔案都必須關。
+                            # 這重現了原本 `with open(...)` 的保證；拿掉就會在暫停路徑上漏 fd。
+                            await _run_file_io(f.close)
 
                         # 下載完成
                         break
@@ -721,22 +854,29 @@ class DownloadWorker:
         else:
             raise last_error or RuntimeError("下載超過重試上限")
 
-        if not part_file.exists() or part_file.stat().st_size == 0:
+        # 同樣一次 stat(2)：-1（不存在）與 0（存在但空）兩態在這裡的處置相同，
+        # 但 `_part_size` 仍把它們分開回傳，因為斷點續傳那邊需要區分。
+        if await _run_file_io(self._part_size, part_file) <= 0:
             raise RuntimeError("下載檔案為空")
 
         # 3. 落地本地與觸發 IngestionPipeline
         filename = f"{job.title}.{job.extension}"
         final_dest = self.pipeline.storage.get_raw_path(job.md5, job.extension)
 
-        # 移動暫存檔為正式原檔
-        part_file.replace(final_dest)
+        # 移動暫存檔為正式原檔。同一個 NFS 挂載內這是一次 rename(2)（便宜），
+        # 但若 raw_dir 日後被搬到別的檔案系統，`Path.replace` 會退化成整檔複製
+        # （數百 MB）——兩種情境共用這一行，所以一律移出 loop。
+        await _run_file_io(part_file.replace, final_dest)
 
         metadata_override = {
             "title": job.title,
             "authors_display": job.authors or "未知作者",
             "publication_year": job.publication_year
         }
-        res = self.pipeline.process_file(final_dest, metadata_override)
+        # 本檔單次阻塞最久的一格：`process_file` 同步做完 compute_file_hashes（全檔讀 NFS）
+        # → PDFExtractor.extract / OCR（CPU-bound 數十秒）→ convert_to_pdf 寫 NFS
+        # → save_parsed_markdown 寫 NFS → 9 次 SQLite 寫。全程在 event loop 執行緒上。
+        res = await _run_file_io(self.pipeline.process_file, final_dest, metadata_override)
         job.work_id = res["work_id"]
         job.status = "completed"
         job.progress_percent = 100

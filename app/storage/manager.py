@@ -1,11 +1,37 @@
 import hashlib
 import os
+import threading
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Set, Tuple, Union
 
 
 class StorageManager:
     """管理 NAS / 容器本地持久儲存區路徑、雜湊指紋計算與原子檔案寫入。"""
+
+    # 已完成目錄引導的 base_dir（process 層級）。
+    #
+    # 為何需要（BR-20260821_040000）：`StorageManager` **不是** singleton——
+    # `routes.py:18 get_storage()` 每個 `Depends` 新建一個，而
+    # `engine.py:24 DatabaseEngine.__init__` 在 `db_path is None` 時也新建一個，
+    # 於是 `Depends(get_dao)` / `Depends(get_search)` 也各自建一個。
+    # 建構子無條件呼叫 `ensure_directories()` ⇒ **每一個 API 請求都對
+    # `/data/raw` 與 `/data/parsed` 各下一次 `os.mkdir(2)`**，而那兩個目錄掛在
+    # `hard,timeo=600` 的 NFS 上（`docker inspect` 實測）。連 `q=zzzznomatch`
+    # 那種完全不碰檔案的搜尋也中招。
+    #
+    # `exist_ok=True` **不會**省掉 syscall：`/usr/lib/python3.12/pathlib.py`
+    # 是先無條件 `os.mkdir(2)` 再 `except OSError` 吞 `EEXIST`。
+    #
+    # 執行位置是 threadpool（sync 相依項由 `fastapi/dependencies/utils.py:676`
+    # 一律 `run_in_threadpool`），所以風險形狀是 **anyio threadpool 飽和**
+    # （實測 `total_tokens=40`）而非 event loop 卡死——NFS 一次 stall，40 個
+    # 並發請求的相依項解析全部堵在 `os.mkdir` 上，之後所有 sync 路由一起排隊。
+    # 表徵與 event-loop 卡死幾乎不可區分，但根因與修法都不同。
+    #
+    # 與 `DatabaseEngine._bootstrapped_paths`（`engine.py:19`）刻意同形：那個守衛
+    # 擋的是 `init_database`，**擋不到這裡**——兩個守衛管的是不同的 syscall。
+    _ensured_dirs: Set[str] = set()
+    _ensure_lock = threading.Lock()
 
     def __init__(self, base_dir: Union[str, Path] = None):
         if base_dir is None:
@@ -14,13 +40,42 @@ class StorageManager:
         self.raw_dir = self.base_dir / "raw"
         self.parsed_dir = self.base_dir / "parsed"
         self.db_dir = self.base_dir / "db"
-        self.ensure_directories()
+        self._ensure_directories_once()
+
+    def _ensure_directories_once(self) -> bool:
+        """每個 base_dir 只在本 process 建立一次目錄，回傳是否實際執行。
+
+        回傳 bool 而非 None，是為了讓「跳過」與「執行」可被測試區分——
+        兩者若共用同一個輸出，就無法證明這個守衛真的生效
+        （同 `DatabaseEngine._ensure_initialized` 的理由）。
+
+        **刻意不做 `exists()` 複查**：那會用 3 次 `stat(2)` 換掉 3 次 `mkdir(2)`，
+        在 NFS 上仍是每請求的 RPC 往返，等於沒修。目錄若被外部刪除，寫入端
+        （`save_raw_bytes` / `save_parsed_markdown`）會拋 `FileNotFoundError`
+        **大聲失敗**——那比 `mkdir(exist_ok=True)` 靜默把「掛載掉了」重建成
+        一個容器內的空目錄要好，後者正是 BR-20260820_223000
+        （`dispatch_br` 寫進 ephemeral 目錄）踩過的坑。
+        需要強制重建時呼叫公開的 `ensure_directories()`。
+        """
+        key = str(self.base_dir)
+        with StorageManager._ensure_lock:
+            if key in StorageManager._ensured_dirs:
+                return False
+            self.ensure_directories()
+            StorageManager._ensured_dirs.add(key)
+            return True
 
     def ensure_directories(self) -> None:
-        """建立必要的目錄結構。"""
+        """建立必要的目錄結構。
+
+        公開語義刻意保持不變：**顯式呼叫一律真的執行**（`main.py:23` 的
+        lifespan 啟動引導依賴這一點）。被跳過的只有**建構子**那條每請求路徑
+        （見 `_ensure_directories_once`）。
+        """
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.parsed_dir.mkdir(parents=True, exist_ok=True)
         self.db_dir.mkdir(parents=True, exist_ok=True)
+        StorageManager._ensured_dirs.add(str(self.base_dir))
 
     @staticmethod
     def compute_file_hashes(file_path: Path) -> Tuple[str, str, int]:

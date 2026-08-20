@@ -227,8 +227,21 @@ async def resume_download_job(job_id: str, worker: DownloadWorker = Depends(get_
 @router.delete("/jobs/{job_id}")
 @router.post("/jobs/{job_id}/delete")
 async def delete_download_job(job_id: str, worker: DownloadWorker = Depends(get_worker)):
-    """刪除特定任務並清理臨時檔案。"""
-    success = worker.delete_job(job_id)
+    """刪除特定任務並清理臨時檔案。
+
+    ⚠ 走 `adelete_job` 而非 `delete_job`：被刪的 `.part` 檔可能有數百 MB，且落在
+    `hard,timeo=600` 的 NFS 上（`docker inspect`：`/nas/openshelf/raw -> /data/raw`）。
+    本路由是 async def，同步 `unlink` 會卡住整個事件迴圈上的所有請求——與本檔
+    `live_search` 的 `_annotate_local_status`（:69）、`assign_job_collections`（:257）
+    同一個處方（BR-20260820_210000 E 節 + BR-20260821_040000）。
+
+    刻意**不是** `await run_in_threadpool(worker.delete_job, job_id)`：`delete_job`
+    內含 `task.cancel()`，而 asyncio Task 的方法不是 thread-safe。實測在 asyncio
+    debug 模式下跨執行緒 cancel 會拋 `RuntimeError: Non-thread-safe operation
+    invoked on an event loop other than the current one` 且 `cancelled=False`
+    ——取消靜默失效。`adelete_job` 把取消留在 loop、只把 unlink 送進專用執行緒。
+    """
+    success = await worker.adelete_job(job_id)
     if not success:
         raise HTTPException(status_code=404, detail="找不到指定任務")
     return {"status": "ok", "deleted_job_id": job_id}
