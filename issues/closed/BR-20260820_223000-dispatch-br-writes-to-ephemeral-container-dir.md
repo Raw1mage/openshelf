@@ -1,6 +1,7 @@
 # BR-20260820_223000 — `dispatch_br` 寫進容器 ephemeral 目錄，自動產生的 BR 全部靜默丟失
 
-Status: OPEN
+Status: CLOSED — verified-AND-effective
+Closed: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4 (commit 0cac2e3)
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4
 Family: openshelf/container-mount-boundary
 Severity: 使用者可感知（自動診斷產出物遺失 + 前端清單恆空）
