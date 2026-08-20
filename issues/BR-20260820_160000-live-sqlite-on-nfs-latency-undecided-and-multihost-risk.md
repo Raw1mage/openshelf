@@ -1,6 +1,9 @@
 # BR-20260820_160000 — 線上 SQLite 位於 NFS 掛載：偶發 20-30s 尖峰成因 UNDECIDABLE，且多主機擴充有資料損毀風險
 
-Status: OPEN
+Status: **PARTIAL** —— 使用者已拍板選 B（DB 搬離 NFS），搬移已執行並 commit `dec5b44`。
+  判準 6（資料完整）、7（還原演練）已達成。**判準 8（尖峰是否消失）未達成**：
+  搬移後只量到 idle（3.0-3.8ms），而尖峰本來就是偶發的——
+  **「我沒量到」與「它不存在」共用同一個輸出**，需觀察期才能結案。詳見「處置」節。
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: db-storage-substrate
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
@@ -222,16 +225,95 @@ CONTROL awk 讀不存在的 proc 檔 → fatal: cannot open   ← 證明 awk 真
 | **B. DB 移到容器本地 volume，NAS 只放書檔** | 需搬移 + 改 compose；DB 不再隨 NAS 備份；不可逆 | 直接消除候選 2 與多主機風險。若尖峰仍在 ⇒ 反證候選 1 |
 | **C. 維持現狀** | 風險與不可診斷性都留著 | — |
 
-**建議 A，理由已改變**：原本建議 B（當時以為 WAL 不可用，B 是修 bug）。
-現在 WAL 沒壞、根因未定，**在未定位前搬移部署拓撲是在沒有證據的地方動刀**。
-A 的產出是證據，且它的成本遠低於 B 的不可逆性。
-但這仍動到部署與備份策略，**是產品決策不是實作細節**，不由 AI 決定。
+~~**建議 A，理由已改變**：原本建議 B（當時以為 WAL 不可用，B 是修 bug）。
+現在 WAL 沒壞、根因未定，在未定位前搬移部署拓撲是在沒有證據的地方動刀。~~
+
+**⚠ 上述建議已被使用者裁示覆蓋（2026-08-20）。使用者選 B，見下方「處置」節。**
+保留原建議文字是為了讓「AI 建議 A、使用者選 B」這個分歧可被後人看見——
+**刪掉它會讓這份 BR 看起來像 AI 一開始就建議 B**，那是事後合理化。
+
+## 處置（2026-08-20，使用者拍板選 B）
+
+使用者選 **B 的具體化**：DB 放 **WSL 本地 repo 內 `data/db/`**（ext4），
+而非原選項描述的「容器本地 volume」。差別在於前者是 host 端可直接存取的
+bind mount，備份與檢查都不需進容器。
+
+### 實際執行（commit `dec5b44`）
+
+```
+1. 備份           NAS 的 openshelf.sqlite + download_jobs.json → ~/openshelf-db-backup-20260820/（0700）
+2. 還原演練       integrity=ok / work 37 rows / 18 tables / FTS5 'operating'=9
+                  CONTROL 亂字串=0、不存在的 DB rc=1   ← 證明這組查詢有鑑別力
+3. 舊空殼處置     repo 內原有的 114KB 空殼（work 0 rows / 12 tables）
+                  改名 openshelf.sqlite.stale-empty-20260820 保留，未刪
+                  CONTROL 空殼 0 rows vs 線上 37 rows  ← 證明我搬的不是空殼
+4. 搬移           NAS → repo data/db/，權限 666/777 供容器 uid 寫入
+5. compose        ${OPENSHELF_NAS_DIR}/db:/data/db  →  ./data/db:/data/db
+                  raw/parsed 仍留 NAS（書檔本體，不受 SQLite 鎖語意影響）
+6. 起容器         health 200 / collections 200
+```
+
+**程式碼零改動**——`app/storage/manager.py:96` 由 `DATA_DIR=/data` 推導路徑，
+是容器內視角，掛載換了它不知道也不需要知道。
+
+### 量測（搬移後）
+
+```
+/api/collections   40ms  →  3.0-3.8ms      約 11 倍
+/api/search        0.392-0.394s（穩定，非尖峰）
+CONTROL 404        1.8ms
+
+fstype  容器內 /data/db = ext2/ext3
+        容器內 /data/raw = nfs             ← 控制組，證明 stat -f 有鑑別力
+
+WAL     連線期間 wal=16512 shm=32768
+        關閉後兩者消失                      ← SQLite 正常清理
+        CONTROL bogus path exists = False
+```
+
+**`/api/search` 的 0.39s 與掛載無關**（穩定值非尖峰，且 collections 已降到 3ms）。
+那格指向 FTS5 查詢本身或 search 路徑的其他成本，是本 BR 之外的獨立問題。
+
+### 備份機制（配套，同一 commit）
+
+DB 搬離 NAS 後就不在 NAS 備份範圍內。新增 `script/backup-db.sh`，
+cron 每日 04:30 備份回 `/nas/openshelf/db-backup/`，保留 14 天。
+
+**用 `sqlite3 .backup` 而非 `cp`**——`cp` 會抓到寫入中的不一致快照
+（WAL 模式下 `-wal` 尚未 checkpoint）。`.backup` 走 Online Backup API，
+產出交易一致的快照且不需停服務。
+
+script 的每一步都讓失敗態與缺席態產生不同輸出，且**備份後驗
+`integrity_check` + 資料筆數**——「備份檔存在」不等於「備份可還原」。
+已實測：cron 產出的 NAS 備份還原演練通過。
+
+### Rollback 路徑
+
+NAS 上原本的 `/nas/openshelf/db/` **未刪**。要回退只需把
+`docker-compose.yml:22` 改回 `${OPENSHELF_NAS_DIR:-/nas/openshelf}/db:/data/db`
+並重啟容器。**但回退會遺失搬移後寫入的資料**——NAS 那份停在 2026-08-20 14:21。
+
+### 這個處置改變了什麼、沒改變什麼
+
+| | |
+|---|---|
+| ✅ 消除候選 2（NFS I/O 阻塞） | DB 不再走 NFS，`timeo=600,hard` 對它不再適用 |
+| ✅ 消除多主機資料損毀風險 | `-shm` 不再跨主機協調 |
+| ✅ idle 效能 11 倍 | 這是副產物不是目標 |
+| ❌ **未證明尖峰已消失** | 見驗收判準第 8 條——需觀察期 |
+| ❌ 未排除候選 1（鎖爭用累計） | 若搬移後仍有尖峰，反而**坐實**候選 1 |
+
+**候選 1 仍然活著。** 搬移消除的是候選 2 的**機制**，不是候選 1。
+若觀察期內尖峰仍發生，那就是候選 1 的直接證據，且屆時選項 A
+（常設觀測）會變成必要而非可選。
 
 ## 驗收判準
 
 ### 共通（無論選哪個方案）
 
-1. `pytest` 不得下降（當前基線 **150 passed**，`.venv/bin/python -m pytest`）。
+1. `pytest` 不得下降（**基線 163 passed**，`.venv/bin/python -m pytest`）。
+   ⚠ 本行原寫 150，是舊值——handler `ses_fe18eab55ffeEQU8vBGV8DrmVd` 在 BR-143000
+   推翻過同一個錯誤。BR 內文的基線數字會隨其他包推進而過期，**引用前先重量**。
 2. **任何宣稱「已排除某候選」的證據，必須附能證明該檢查有鑑別力的控制組。**
    本 BR 已有兩次「看起來成立、實則無鑑別力」的推論（`ls` 無 `-wal`、
    `total > timeout` + 200），兩次都是缺控制組。
@@ -250,10 +332,15 @@ A 的產出是證據，且它的成本遠低於 B 的不可逆性。
 
 ### 若選 B（搬移 DB）
 
-6. 需證明搬移後既有 **37 筆 work** 資料完整（含 FTS5 索引可查）。
-7. 需保留至少一次搬移前的可還原備份，且證明該備份真的能還原（**還原演練，不是備份存在**）。
-8. 搬移後需重新量測尖峰是否仍發生——**這是 B 的診斷價值所在**，
-   不做這步就只是換了個地方存檔。
+6. ✅ **已達成** — 搬移後 API `total=37`、直查 `work` 37 rows、`integrity_check=ok`、
+   18 tables，FTS5 `MATCH 'operating'` 回 9（控制組：亂字串回 0，證明是真比對）。
+7. ✅ **已達成** — 兩次還原演練皆通過（搬移前的家目錄備份、以及 cron 產出的 NAS 備份），
+   每次都驗 `integrity_check` + 資料筆數 + FTS5 可查 + 控制組。
+8. ❌ **未達成，這是本 BR 仍為 PARTIAL 的唯一原因。**
+   搬移後只量到 idle 值，**未經過足以觀察到偶發尖峰的時間窗**。
+   原始尖峰在數小時的使用中只出現數次，而我的量測窗口是分鐘級。
+   **不得以「搬移後沒量到尖峰」宣稱候選 2 已排除**——那正是本 BR 已犯過兩次的錯。
+   結案條件：累積足夠使用時數後，`/api/collections` 與 `/api/search` 未再出現 >2s 請求。
 
 ## 沒驗證的
 
