@@ -4,6 +4,7 @@ import uuid
 import hashlib
 import asyncio
 import tempfile
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
@@ -11,6 +12,8 @@ import httpx
 
 from app.crawler.mirror_resolver import MirrorResolver
 from app.pipeline.ingest import IngestionPipeline
+
+log = logging.getLogger(__name__)
 
 
 class DownloadJob:
@@ -89,8 +92,13 @@ class DownloadWorker:
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             tmp_file.replace(self._jobs_file)
-        except Exception:
-            pass
+        except Exception as e:
+            # 存檔失敗不阻斷呼叫端（回退行為不變），但必須出聲——
+            # 否則「寫成功」與「寫失敗」共用同一個輸出，重啟後任務靜默消失。
+            log.warning(
+                "下載任務狀態存檔失敗，本次變更未落地磁碟（重啟後可能遺失）：%s: %s | file=%s",
+                type(e).__name__, e, self._jobs_file,
+            )
 
     def _load_jobs_from_disk(self):
         """從磁碟載入歷史與未完成任務。"""
@@ -127,17 +135,33 @@ class DownloadWorker:
                 if job.status in ("queued", "downloading"):
                     job.status = "queued"
                     self.queue.put_nowait(job)
-        except Exception:
-            pass
+        except Exception as e:
+            # 載入失敗不阻斷啟動（回退行為不變），但必須出聲——
+            # 否則「檔案裡沒有任務」與「檔案壞了讀不出來」共用同一個輸出。
+            log.warning(
+                "下載任務佇列載入失敗，既有任務未被還原：%s: %s | file=%s",
+                type(e).__name__, e, self._jobs_file,
+            )
 
     def start(self):
-        """啟動背景 Worker 監聽循環。"""
+        """啟動背景 Worker 監聽循環。
+
+        兩態必須可區分（BR-20260820_143000）：
+          - 有 running loop 且成功建立/已在跑 → 靜默（正常路徑）
+          - 無 running loop → 背景迴圈**不會**啟動，佇列中的任務會永遠停在
+            `queued`。這不是 no-op 的正常情況，必須 log.warning 出聲。
+        """
         try:
             loop = asyncio.get_running_loop()
-            if self._worker_task is None or self._worker_task.done():
-                self._worker_task = loop.create_task(self._process_queue())
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            log.warning(
+                "無 running event loop，下載背景工作未啟動，佇列中的任務將停留在 "
+                "queued 不會被執行（%s: %s）。請在 async context 下呼叫 start()。",
+                type(e).__name__, e,
+            )
+            return
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = loop.create_task(self._process_queue())
 
     def enqueue(
         self,
@@ -148,7 +172,18 @@ class DownloadWorker:
         mirror_links: Optional[List[str]] = None,
         publication_year: Optional[int] = None
     ) -> DownloadJob:
-        """將書籍加入下載佇列。"""
+        """將書籍加入下載佇列。
+
+        ⚠ 副作用（BR-20260820_143000 判準 4，目前為 by-design）：
+        本方法尾端**無條件**呼叫 `self.start()`。在有 running event loop 的
+        環境下（含 `TestClient`），這會立刻 `create_task(_process_queue())`
+        並開始對公網鏡像發出真實 HTTP 請求；在無 loop 的同步環境下則不會
+        啟動，任務停留在 `queued`（此時 `start()` 會 log.warning 出聲）。
+
+        測試若只想驗證欄位傳遞契約而不要真實下載，需自行停掉背景迴圈
+        （例：`monkeypatch.setattr(worker, "start", lambda: None)`）。
+        目前沒有 opt-out 參數——是否提供屬產品決策，未在本包變更。
+        """
         for j in self.jobs.values():
             if j.md5 == md5.lower() and j.status in ("queued", "downloading", "paused", "completed"):
                 return j
