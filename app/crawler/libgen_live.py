@@ -1,8 +1,11 @@
+import logging
 import re
 import urllib.parse
 from typing import List, Dict, Any, Optional
 import httpx
 from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
 
 
 class LibgenCrawler:
@@ -41,6 +44,39 @@ class LibgenCrawler:
             except Exception:
                 pass
         return self.MIRRORS
+
+    # 出版年份辨識樣式。libgen 現行版型的 Year 欄位可能是光禿禿的四位數（`1987`），
+    # 也可能是完整日期（`1972 June 01`）。取第一個落在合理區間的四位數。
+    YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2}|21[0-9]{2})\b")
+
+    # 明確表示「來源沒有這個資訊」的佔位字串，與「有字串但解析不出來」區分。
+    YEAR_PLACEHOLDERS = {"", "-", "--", "n/a", "na", "none", "null", "unknown", "?"}
+
+    @classmethod
+    def parse_publication_year(cls, year_str: Optional[str]) -> Optional[int]:
+        """從 libgen 的 Year 欄位取出四位數出版年。
+
+        三種輸入必須可區分，不得共用同一個靜默輸出：
+          1. 來源真的沒有（空字串 / `n/a` 之類佔位符）  -> None，不記 log
+          2. 有字串但取不出年份（版型變更、非預期格式）-> None，**記 log.debug 帶原始字串**
+          3. 有可解析的年份（`1987` / `1972 June 01`）  -> int
+
+        第 2 種是 BR-20260820_130500 的病灶：`str.isdigit()` 把它併進第 1 種，
+        於是版型一改就沒有人會知道。
+        """
+        if year_str is None:
+            return None
+        normalized = str(year_str).strip()
+        if normalized.lower() in cls.YEAR_PLACEHOLDERS:
+            return None
+        match = cls.YEAR_RE.search(normalized)
+        if not match:
+            log.debug(
+                "libgen year field present but unparseable (possible layout change): %r",
+                normalized,
+            )
+            return None
+        return int(match.group(1))
 
     # Magnet URI 與 .torrent 直鏈辨識樣式
     MAGNET_RE = re.compile(r"magnet:\?[^\s\"'<>]+", re.IGNORECASE)
@@ -283,7 +319,7 @@ class LibgenCrawler:
             authors = cols[1].text.strip()
             publisher = cols[2].text.strip()
             year_str = cols[3].text.strip()
-            year = int(year_str) if year_str.isdigit() else None
+            year = self.parse_publication_year(year_str)
             language = cols[4].text.strip()
             pages = cols[5].text.strip()
             size_str = cols[6].text.strip()
@@ -360,7 +396,7 @@ class LibgenCrawler:
             title = title_col.find("a").text.strip() if title_col.find("a") else title_col.text.strip()
             publisher = cols[3].text.strip()
             year_str = cols[4].text.strip()
-            year = int(year_str) if year_str.isdigit() else None
+            year = self.parse_publication_year(year_str)
             pages = cols[5].text.strip()
             language = cols[6].text.strip()
             size_str = cols[7].text.strip()
