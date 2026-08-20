@@ -1,9 +1,45 @@
 # BR-20260821_020000 — 讀取端 `list_dispatched_issues` 在落點目錄不存在時回 `total=0`，零訊號
 
-Status: OPEN（待使用者裁決 API 契約）
+Status: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`7c0ff48`），但保留三格未消除的殘留，故不進 `closed/`
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4
 Family: openshelf/container-mount-boundary
 Severity: 使用者可感知（前端清單恆空，且無任何可據以排查的訊號）
+Fixed-by: `7c0ff48`（handler `ses_fe0047b7affeRjQIojOZ6ZY65b`，dispatcher 驗收 2026-08-21）
+
+## 殘留（PARTIAL 的理由，三格皆未消除）
+
+1. **未真的移除 `./issues` 掛載再打端點**。移除掛載必須重啟容器，而 handler 無此授權。
+   所以「掛載真的失效時端點回 `source_available:false`」目前是**測試層證據 + 靜態推論**，
+   不是生產環境實測。原 BR「沒驗證的」第 1 格**未被消除**，只從「完全沒有證據」推進到
+   「有測試層證據」。
+2. **前端未在真實瀏覽器渲染驗證**。mutation 探針是抽出函式本體用 `new Function` 執行，
+   非 DOM 環境。證明的是分支邏輯，**沒有**證明 `innerHTML` 實際渲染樣貌，也沒證明
+   `loadDispatchedIssuesNotice` 在 `app.js:1667` 那個呼叫點真的被觸發。
+3. **未查是否還有第三個模組**也用 `Path(__file__).parent.parent.parent` 解析落點。
+   原 BR 提出的這一格，handler 判定超出本包邊界而未查，**仍然開著**。
+
+## 已驗收的部分（dispatcher 獨立重做，非採信 handler 自報）
+
+- 全套件 `246 passed` rc=0；新測試 `9 passed`；控制組（跑不存在的 test）rc=4 有鑑別力
+- 後端 mutation 三格，各帶指紋、跑完還原，`sha256` 三次皆對回 `28f555c01a72a08a…`
+  - `is_dir()`→`exists()`：1→0 / 0→1，只殺 `test_path_exists_but_is_a_file`
+  - `source_available` 缺目錄分支 `False`→`True`：1→0 / 1→2，殺 3 條
+  - 刪 `log.error` 整段：1→0，只殺 `test_missing_dir_emits_log_error`
+- 前端 mutation `=== false`→`!== true`：D（舊後端 `undefined`）由 `none/false` 變成
+  `block/warn:true`；**控制組**（原版同一支探針）D = `none/false/false` ⇒ 兩者可分，
+  證明 `=== false` 是必要條件不是風格
+- 線上 8088 實測 `HTTP=200`、`keys=['issues','source_available','source_path','total']`；
+  控制組 `/zzz_not_a_route` = 404
+- `total=7` vs 容器內 8 個 `.md` 已釐清為**非缺陷**：`settings_routes.py:154`
+  `startswith("BR-")` 依設計過濾掉 `FR-*`（`HOST_ONLY` 僅該 FR，`API_ONLY`=0）
+
+## 已採納的推翻（handler 推翻派工單兩格，兩格都成立）
+
+- **欄位不叫 `mount_ok`**：該檢查分辨不出成因（未掛載 / 路徑解析改變 / 權限不足 /
+  該位置是檔案），用欄位名斷言證明不了的成因，本身就是新的一次「兩態共用一個輸出」。
+  改用 `source_available`（只陳述可觀察事實）+ `source_path`（交出判讀原料）。
+- **前端做三分支而非一行提示**：正常空清單時不顯示任何東西。把錯誤訊號變成常態雜訊，
+  使用者學會忽略之後，真的失效時同樣看不見——那是同一個病的鏡像。
 
 ## **Related**
 
