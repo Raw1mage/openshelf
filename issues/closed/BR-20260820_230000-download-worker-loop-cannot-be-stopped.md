@@ -185,7 +185,7 @@ dispatcher `ses_fe7b5cbadffeSlxj0dv1Z740O4` 獨立驗收。
 2 pause 語意未被破壞           ✅  mutation D（一律穿透）死的正是
                                    test_pause_job_marks_paused_and_keeps_loop_running
                                    斷言證據：Task cancelled ... _process_queue（迴圈陪葬）
-3 mutation 鎖得住              ⚠  見下方「判準 3 的缺口」
+3 mutation 鎖得住              ✅  round 2 補鎖後成立，見下方「判準 3 的缺口（round 2 已補）」
 4 _hard_cancel 可拿掉          ✅  grep rc=1（消失），CONTROL _shutdown=5 rc=0
                                    autostart 測試 7 passed rc=0
 5 pytest 不下降                ✅  183 passed rc=0
@@ -216,7 +216,7 @@ production 檔案**（線上是 bind-mount + `--reload`，改檔會立刻波及�
 log 有 `Application shutdown complete`。**但那格如證據 ② 所述沒有鑑別力**，
 不作為判準 6 的依據。
 
-### 判準 3 的缺口（dispatcher 四組 mutation 的發現）
+### 判準 3 的缺口（dispatcher 四組 mutation 的發現）——round 2 已補
 
 ```
 A 只拿掉 while not self._stopping，保留兩處 re-raise    9 passed rc=0
@@ -237,8 +237,91 @@ D 一律穿透（拿掉 pause 分支）                           1 failed rc=1
 它描述的 mutation A 是「只 re-raise 不加守衛」，而我實測那個組合是**全過**。
 方向對（兩處都改才完整）、數字錯（死 0 條不是 1 條）。
 
-**留給後人的一格**：若日後有人「簡化」掉 `while not self._stopping`，
-測試不會red。要補鎖就得寫一條「stop 後再 put 一個 job，迴圈不得取用它」的測試。
+#### round 2：缺口已補，且我上面那句「守衛是冗餘」要收回
+
+commit `507f214`（handler I round 2，只動 `tests/test_download_worker_stop_lifecycle.py`，
+production 一行未碰）。
+
+**先修正我自己的判斷。** 上面寫「守衛在有 re-raise 的前提下是冗餘的防禦深度」——
+**這句話的根據不足。** A 全過只證明「當時沒有測試鎖住它」，不證明「它守的東西是冗餘的」。
+handler 讀 production 源碼指出真正的機制：
+
+```
+_process_queue（download_worker.py:393-429）
+  :395  while not self._stopping:      ← 守衛
+  :396      job = await self.queue.get()
+  :397      if job.status == "paused" or job.job_id not in self.jobs:
+  :398          self.queue.task_done()
+  :399          continue                ← 唯一能回到迴圈頂端的路徑
+  ...
+  :415      if self._stopping:
+  :416          self._mark_interrupted_by_shutdown(job)
+  :417          raise                   ← 取消穿透整個 _process_queue，task 當場結束
+```
+
+**re-raise 在場時，走 `stop()` 的 task 根本回不到迴圈頂端，守衛不被求值。**
+這就是 A 組九條全過的機制：那九條全部經由 `stop()` 抵達，所以全部碰不到守衛。
+
+守衛守的是一個**獨立且可被單獨違反的契約**——「旗標已立時，迴圈不得再從佇列
+取用新工作」。能被單獨鎖住的東西不是冗餘。
+
+**新增的鎖（`:355-451`）**
+
+- `_skippable_job()` — 入列後標 `paused`，做出會走 `:397` 跳過分支的 job
+- `test_loop_guard_refuses_new_work_once_stopping` — 直接設 `_stopping=True`，
+  佇列放三個可跳過的 job，斷言迴圈立刻結束且 `qsize` 維持 3
+- `test_loop_does_drain_skippable_work_when_not_stopping` — 控制組，同樣佈置
+  只差旗標為假，斷言迴圈**真的**把佇列清空。沒有這條，上一條等於什麼都沒證明
+
+白箱測試（直接寫 `_stopping`）是刻意的：經由 `stop()` 抵達同一狀態是 race window，
+而**不穩定的測試與「守衛壞了」共用同一個輸出**。
+
+**dispatcher 獨立重做（0700 scratch 副本，不碰線上）**
+
+```
+指紋   guard      1 -> 0   grep rc=1     ← 要動的那格
+       re-raise   2 -> 2   grep rc=0     ← 刻意未動，兩處完好
+       while True 0 -> 1   grep rc=0     ← 替換確實落地
+baseline                    11 passed rc=0
+mutation A                  1 failed / 10 passed  rc=1（非 124）
+  死者   test_loop_guard_refuses_new_work_once_stopping
+  形狀   :390 Failed（'Failed:'=1 rc=0 / 'AssertionError'=0 rc=1）
+         'TimeoutError'=8 但位於 chained context
+         （log :82 direct cause、:130 During handling）
+  控制組測試存活  FAILED 清單命中 0 rc=1
+         CONTROL 同 pattern 對死者命中 1 rc=0
+還原後  guard=1 re-raise=2 while True=0，11 passed rc=0
+全套件  185 passed rc=0
+範圍    git diff --name-only -- app/ 為 0 bytes
+        CONTROL 同指令對 tests/ 44 bytes 非空
+```
+
+**handler 報告的行號 `:206` 是筆誤**，landed bytes 的 `pytest.fail` 在 `:390`，
+我實測死的位置也是 `:390`。不影響結論，但「哪一條測試死了」正是它自己上一輪
+道歉的失效類別，記在這裡。
+
+#### round 2 新固定下來的一個行為（本 BR 未曾討論過）
+
+新測試斷言「關閉中的迴圈連跳過都不做，佇列 `qsize` 維持 3」。**這是這條測試
+把它固定下來的，不是 BR 推導出來的**——handler 主動標出這格要我看。
+
+dispatcher 判定：安全。`self.queue` 是純記憶體 `asyncio.Queue`（`:77`），
+持久化的是 `self.jobs` 與 `download_jobs.json`；重啟後由
+`_load_jobs_from_disk():140` 依 `status in ("queued","downloading")` 重新入列。
+**關閉時佇列裡剩什麼沒有持久後果**，而那些 job 本來就是 `paused`（跳過分支的
+前提），重啟後照規則不會被重入列——與不關閉時的結果一致。
+
+#### handler 自己的 RCA（值得記，這是同一失效類別的第三次）
+
+它 round 1 報「mutation A 死 1 條」，實際那筆數據來自**我的 mutation B**
+（拿掉 re-raise、留守衛）。兩個不同的 patch 共用一個代號 `mutation A`，
+於是它自己的數據在打自己的臉時它看不見——它的數據其實說的是
+「守衛單獨守不住、re-raise 在做事」，它卻讀成「守衛是必要的」。
+
+**前兩次是「兩種狀態共用一個輸出」，這次是「兩種輸入共用一個名字」——同一個病的上游版本。**
+
+它開的處方已被本 BR 採納為驗收條件：**mutation 報告的每一組都必須附
+byte-level 指紋（哪個 pattern 從幾變幾、哪個刻意沒變），代號不算數。**
 
 ### handler 推翻本 BR 三格，皆經獨立坐實
 
