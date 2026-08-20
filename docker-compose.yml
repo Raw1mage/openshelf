@@ -20,4 +20,10 @@ services:
       # lock，且 timeo=600,hard 會讓單次 read() 阻塞到 60s 而對 SQLite 不可見。
       # DB 不在 NAS 備份範圍內，由 script/backup-db.sh + cron 每日備份回 NAS。
       - ./data/db:/data/db
+      # BR-223000：容器內 /app/issues 原本未掛載，MirrorValidator.__init__ 的
+      # mkdir(exist_ok=True) 會靜默造出一個 ephemeral 目錄，dispatch_br 寫進去的
+      # 診斷 BR 在 rebuild 時全部消失，且前端「已派發 BR」清單恆為空（零錯誤零 log）。
+      # 容器以 root 執行，故 host 端 issues/ 需為 0777 才能讓 uid=1000 搬移/歸檔
+      # 容器產生的檔案（與 data/db 同款繞法）。
+      - ./issues:/app/issues
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
