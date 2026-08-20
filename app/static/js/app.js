@@ -19,6 +19,8 @@ let currentResults = [];
 let selectedMd5s = new Set();
 let queuePollInterval = null;
 let cachedJobsByMd5 = new Map();
+// 記錄各公網卡片「上一次已渲染」的佇列狀態指紋，供輪詢時做差量比對（避免無條件全量重繪）
+let renderedCardSigByMd5 = new Map();
 
 // 全域 Modal / 獨立頁切換管理器（支援頂部導航列直接無縫切換、互斥關閉與高亮）
 function closeAllModals() {
@@ -513,6 +515,47 @@ function applySortAndRender() {
   }).join("");
 
   bindCheckboxEvents();
+  restoreSelectionState();
+  snapshotRenderedCardSignatures();
+}
+
+// 全量重繪後，依全域 selectedMd5s 補回使用者原有的勾選狀態（方案 A：狀態保留防護網）
+function restoreSelectionState() {
+  const bookList = document.getElementById("bookList");
+  if (!bookList) return;
+
+  let visibleCheckedCount = 0;
+  const visibleMd5s = new Set();
+  bookList.querySelectorAll(".book-select-checkbox").forEach(cb => {
+    const md5 = cb.dataset.md5;
+    visibleMd5s.add(md5);
+    if (selectedMd5s.has(md5)) {
+      cb.checked = true;
+      visibleCheckedCount++;
+    }
+  });
+
+  // 已離開可勾選狀態（例如已排入佇列 / 已完成收書）之項目不再屬於批次選取集合
+  for (const md5 of Array.from(selectedMd5s)) {
+    if (!visibleMd5s.has(md5)) selectedMd5s.delete(md5);
+  }
+
+  const selectAllCheckbox = document.getElementById("selectAllCheckbox");
+  if (selectAllCheckbox) {
+    selectAllCheckbox.checked = visibleMd5s.size > 0 && visibleCheckedCount === visibleMd5s.size;
+  }
+  updateBatchBar();
+}
+
+// 記錄目前畫面上每張公網卡片的狀態指紋，作為下一次輪詢的差量比對基準
+function snapshotRenderedCardSignatures() {
+  renderedCardSigByMd5.clear();
+  for (const item of currentResults || []) {
+    const md5Key = (item.md5 || "").toLowerCase();
+    if (!md5Key) continue;
+    if (item.availability_tier === 0 || (item.work_id && !item.work_id.startsWith("libgen_"))) continue;
+    renderedCardSigByMd5.set(md5Key, getLiveCardSignature(item));
+  }
 }
 
 function renderLocalBookCard(item) {
@@ -568,12 +611,27 @@ function renderLocalBookCard(item) {
   `;
 }
 
-function renderLiveBookCard(item) {
-  const formatTag = getFormatTag(item.format);
-  const langTag = item.language ? `<span class="tag tag-lang">${item.language.toUpperCase()}</span>` : "";
-  const sizeMb = item.size_bytes ? (item.size_bytes / (1024 * 1024)).toFixed(1) + " MB" : "";
-  const yearText = item.publication_year ? `• ${item.publication_year}年` : "";
-  
+// 取得某公網卡片當前的佇列狀態指紋；僅在此指紋變動時才需要更新該卡片的 DOM
+function getLiveCardSignature(item) {
+  const md5Key = (item.md5 || "").toLowerCase();
+  const queueJob = cachedJobsByMd5.get(md5Key) || (item.queue_status ? {
+    status: item.queue_status,
+    progress_percent: item.queue_progress || 0,
+    job_id: item.queue_job_id,
+    work_id: item.local_work_id
+  } : null);
+
+  if (!queueJob) return `none|${item.availability_tier === 0 && item.local_work_id ? item.local_work_id : ""}`;
+  return [
+    queueJob.status || "",
+    queueJob.progress_percent || 0,
+    queueJob.job_id || "",
+    queueJob.work_id || item.local_work_id || ""
+  ].join("|");
+}
+
+// 計算公網卡片三段動態區塊（左指示器 / 狀態標籤 / 下拉選單項目）
+function buildLiveCardParts(item) {
   const md5Key = (item.md5 || "").toLowerCase();
   const queueJob = cachedJobsByMd5.get(md5Key) || (item.queue_status ? {
     status: item.queue_status,
@@ -669,8 +727,20 @@ function renderLiveBookCard(item) {
     `;
   }
 
+  return { leftIndicatorHtml, statusBadgeHtml, dropdownItemsHtml };
+}
+
+function renderLiveBookCard(item) {
+  const formatTag = getFormatTag(item.format);
+  const langTag = item.language ? `<span class="tag tag-lang">${item.language.toUpperCase()}</span>` : "";
+  const sizeMb = item.size_bytes ? (item.size_bytes / (1024 * 1024)).toFixed(1) + " MB" : "";
+  const yearText = item.publication_year ? `• ${item.publication_year}年` : "";
+
+  const md5Key = (item.md5 || "").toLowerCase();
+  const { leftIndicatorHtml, statusBadgeHtml, dropdownItemsHtml } = buildLiveCardParts(item);
+
   return `
-    <div class="book-card">
+    <div class="book-card" data-md5="${md5Key}">
       <div class="book-card-header">
         <div class="book-indicator-wrap">
           ${leftIndicatorHtml}
@@ -687,7 +757,7 @@ function renderLiveBookCard(item) {
       <div class="book-main">
         <div class="book-title">${escapeHtml(item.title)}</div>
         <div class="book-meta">
-          ${statusBadgeHtml}
+          <span class="book-status-slot" style="display: contents;">${statusBadgeHtml}</span>
           ${formatTag}
           ${langTag}
           <span>✍️ ${escapeHtml(item.authors_display || "未知作者")}</span>
@@ -701,18 +771,78 @@ function renderLiveBookCard(item) {
   `;
 }
 
-function bindCheckboxEvents() {
-  document.querySelectorAll(".book-select-checkbox").forEach(cb => {
-    cb.addEventListener("change", (e) => {
-      const md5 = cb.dataset.md5;
-      if (cb.checked) {
-        selectedMd5s.add(md5);
-      } else {
-        selectedMd5s.delete(md5);
+// 方案 B 核心：僅對佇列狀態指紋真的變動的卡片做局部 DOM 置換，其餘卡片完全不動。
+// 回傳實際被更新的卡片數（0 代表本輪輪詢沒有觸碰任何 DOM）。
+function patchChangedLiveCards() {
+  const bookList = document.getElementById("bookList");
+  if (!bookList) return 0;
+
+  let patched = 0;
+  for (const item of currentResults || []) {
+    const md5Key = (item.md5 || "").toLowerCase();
+    if (!md5Key) continue;
+    if (item.availability_tier === 0 || (item.work_id && !item.work_id.startsWith("libgen_"))) continue;
+
+    const nextSig = getLiveCardSignature(item);
+    if (renderedCardSigByMd5.get(md5Key) === nextSig) continue;
+
+    const card = bookList.querySelector(`.book-card[data-md5="${md5Key}"]`);
+    if (!card) {
+      // 該卡片不在目前 DOM（例如尚未渲染），僅更新指紋基準，不強制重繪
+      renderedCardSigByMd5.set(md5Key, nextSig);
+      continue;
+    }
+
+    const { leftIndicatorHtml, statusBadgeHtml, dropdownItemsHtml } = buildLiveCardParts(item);
+
+    const indicatorWrap = card.querySelector(".book-indicator-wrap");
+    if (indicatorWrap) {
+      // 狀態已離開「可勾選」時，同步從批次選取集合移除，避免殘留幽靈選取
+      const oldCb = indicatorWrap.querySelector(".book-select-checkbox");
+      const wasChecked = !!(oldCb && oldCb.checked);
+      indicatorWrap.innerHTML = leftIndicatorHtml;
+      const newCb = indicatorWrap.querySelector(".book-select-checkbox");
+      if (newCb) {
+        newCb.checked = wasChecked || selectedMd5s.has(newCb.dataset.md5);
+        bindOneCheckbox(newCb);
+      } else if (!newCb) {
+        selectedMd5s.delete(item.md5);
       }
-      updateBatchBar();
-    });
+    }
+
+    const statusSlot = card.querySelector(".book-status-slot");
+    if (statusSlot) statusSlot.innerHTML = statusBadgeHtml;
+
+    // 下拉選單若正在開啟中則不動它，避免把使用者剛打開的選單關掉
+    const menu = card.querySelector(".book-dropdown-menu");
+    if (menu && !menu.classList.contains("active")) {
+      menu.innerHTML = dropdownItemsHtml;
+    }
+
+    renderedCardSigByMd5.set(md5Key, nextSig);
+    patched++;
+  }
+
+  if (patched > 0) updateBatchBar();
+  return patched;
+}
+
+function bindOneCheckbox(cb) {
+  if (!cb || cb.dataset.bound === "1") return;
+  cb.dataset.bound = "1";
+  cb.addEventListener("change", () => {
+    const md5 = cb.dataset.md5;
+    if (cb.checked) {
+      selectedMd5s.add(md5);
+    } else {
+      selectedMd5s.delete(md5);
+    }
+    updateBatchBar();
   });
+}
+
+function bindCheckboxEvents() {
+  document.querySelectorAll(".book-select-checkbox").forEach(bindOneCheckbox);
 }
 
 function updateBatchBar() {
@@ -890,9 +1020,10 @@ async function refreshQueueModal() {
       localStorage.setItem("cms_queue_progress", avgProgress);
     } catch (e) {}
 
-    // 若首頁當前正在呈現檢索結果，即時同步更新各卡片按鈕與狀態
+    // 若首頁當前正在呈現檢索結果，僅對佇列狀態真的變動的卡片做差量原地更新（方案 B），
+    // 不再無條件 applySortAndRender() 全量重繪，以免毀掉使用者的勾選、已開啟的下拉選單與焦點
     if (currentResults && currentResults.length > 0 && document.getElementById("resultsHeader").style.display !== "none") {
-      applySortAndRender();
+      patchChangedLiveCards();
     }
 
     // 若開啟了本機同步，檢查是否有剛完成且尚未保存至本機磁碟的任務
