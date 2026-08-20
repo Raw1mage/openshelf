@@ -131,19 +131,31 @@ async def enqueue_batch_download(
     req: BatchDownloadRequest,
     worker: DownloadWorker = Depends(get_worker)
 ):
-    """批次加入多本書籍至下載佇列。"""
-    enqueued_jobs = []
-    for item in req.items:
-        if item.md5:
-            job = worker.enqueue(
-                md5=item.md5,
-                title=item.title,
-                authors=item.authors,
-                extension=item.extension or "pdf",
-                mirror_links=item.mirror_links,
-                publication_year=item.publication_year
-            )
-            enqueued_jobs.append(job.to_dict())
+    """批次加入多本書籍至下載佇列。
+
+    BR-20260820_210000 F 節：改用 `worker.enqueue_many` 一次入列。
+    逐筆呼叫 `enqueue()` 時每一筆都做兩件 O(N) 的事——線性掃描找重複、
+    整份重寫 download_jobs.json——N 筆疊加成 O(N²)，且那是同步 f.write，
+    整段時間事件迴圈被佔住、全站請求延後。實測 N=480 為 1.5 秒。
+
+    ⚠ `if item.md5` 的過濾**刻意保留**：現行行為是靜默略過缺 md5 的項，
+    而 `enqueue_many` 缺 md5 會拋 ValueError。在這裡過濾可讓本次改動
+    **只改成本不改行為**。「送 N 筆回 N-1 筆沒有訊號」是獨立的既有缺陷，
+    需要另外決策（會影響既有前端），不在本次範圍。
+    """
+    jobs = worker.enqueue_many([
+        {
+            "md5": item.md5,
+            "title": item.title,
+            "authors": item.authors,
+            "extension": item.extension or "pdf",
+            "mirror_links": item.mirror_links,
+            "publication_year": item.publication_year,
+        }
+        for item in req.items
+        if item.md5
+    ])
+    enqueued_jobs = [job.to_dict() for job in jobs]
 
     return {
         "status": "ok",
