@@ -34,6 +34,9 @@ class DownloadRequestItem(BaseModel):
     authors: Optional[str] = None
     extension: Optional[str] = "pdf"
     mirror_links: Optional[List[str]] = []
+    # None 代表「不知道」。舊前端（或任何不帶這個欄位的 client）送來的 payload
+    # 必須仍能通過驗證，所以這裡是 Optional 而非必填。
+    publication_year: Optional[int] = None
 
 
 class BatchDownloadRequest(BaseModel):
@@ -92,7 +95,8 @@ async def enqueue_single_download(
         title=req.title,
         authors=req.authors,
         extension=req.extension or "pdf",
-        mirror_links=req.mirror_links
+        mirror_links=req.mirror_links,
+        publication_year=req.publication_year
     )
     return job.to_dict()
 
@@ -111,7 +115,8 @@ async def enqueue_batch_download(
                 title=item.title,
                 authors=item.authors,
                 extension=item.extension or "pdf",
-                mirror_links=item.mirror_links
+                mirror_links=item.mirror_links,
+                publication_year=item.publication_year
             )
             enqueued_jobs.append(job.to_dict())
 

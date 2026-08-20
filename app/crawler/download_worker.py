@@ -22,7 +22,8 @@ class DownloadJob:
         title: str,
         authors: Optional[str] = None,
         extension: str = "pdf",
-        mirror_links: Optional[List[str]] = None
+        mirror_links: Optional[List[str]] = None,
+        publication_year: Optional[int] = None
     ):
         self.job_id = job_id
         self.md5 = md5.lower()
@@ -30,6 +31,9 @@ class DownloadJob:
         self.authors = authors
         self.extension = extension.lower()
         self.mirror_links = mirror_links or []
+        # None 代表「不知道」，與 0（已查證確無）不同。缺值一律保持 None，
+        # 不得退化成 0 或空字串——那會讓「上游沒給」與「上游給了 0」共用同一個輸出。
+        self.publication_year = publication_year
         self.status = "queued"  # queued, downloading, paused, completed, failed
         self.progress_percent = 0
         self.downloaded_bytes = 0
@@ -47,6 +51,7 @@ class DownloadJob:
             "title": self.title,
             "authors": self.authors,
             "extension": self.extension,
+            "publication_year": self.publication_year,
             "status": self.status,
             "progress_percent": self.progress_percent,
             "downloaded_bytes": self.downloaded_bytes,
@@ -102,7 +107,10 @@ class DownloadWorker:
                     title=item["title"],
                     authors=item.get("authors"),
                     extension=item.get("extension", "pdf"),
-                    mirror_links=item.get("mirror_links", [])
+                    mirror_links=item.get("mirror_links", []),
+                    # 舊格式 jobs.json 沒有這個 key，必須用 .get 而非 ["..."]，
+                    # 否則整個 worker 啟動會被一份既有佇列檔炸掉。
+                    publication_year=item.get("publication_year")
                 )
                 job.status = item.get("status", "queued")
                 job.progress_percent = item.get("progress_percent", 0)
@@ -137,7 +145,8 @@ class DownloadWorker:
         title: str,
         authors: Optional[str] = None,
         extension: str = "pdf",
-        mirror_links: Optional[List[str]] = None
+        mirror_links: Optional[List[str]] = None,
+        publication_year: Optional[int] = None
     ) -> DownloadJob:
         """將書籍加入下載佇列。"""
         for j in self.jobs.values():
@@ -151,7 +160,8 @@ class DownloadWorker:
             title=title,
             authors=authors,
             extension=extension,
-            mirror_links=mirror_links
+            mirror_links=mirror_links,
+            publication_year=publication_year
         )
         self.jobs[job_id] = job
         self._save_jobs_to_disk()
@@ -402,7 +412,8 @@ class DownloadWorker:
 
         metadata_override = {
             "title": job.title,
-            "authors_display": job.authors or "未知作者"
+            "authors_display": job.authors or "未知作者",
+            "publication_year": job.publication_year
         }
         res = self.pipeline.process_file(final_dest, metadata_override)
         job.work_id = res["work_id"]

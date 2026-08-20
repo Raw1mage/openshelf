@@ -1011,7 +1011,8 @@ async function triggerSingleDownload(md5) {
         title: item.title,
         authors: item.authors_display,
         extension: item.extension || "pdf",
-        mirror_links: item.mirror_links || []
+        mirror_links: item.mirror_links || [],
+        publication_year: item.publication_year ?? null
       })
     });
     if (!res.ok) throw new Error("加入下載失敗");
@@ -1047,7 +1048,8 @@ async function triggerBatchDownload() {
         title: item.title,
         authors: item.authors_display,
         extension: item.extension || "pdf",
-        mirror_links: item.mirror_links || []
+        mirror_links: item.mirror_links || [],
+        publication_year: item.publication_year ?? null
       });
     }
   }
