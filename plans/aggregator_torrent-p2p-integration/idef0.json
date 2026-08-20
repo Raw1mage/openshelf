@@ -1,0 +1,116 @@
+{
+  "diagram_title": "Torrent / Magnet (P2P) 搜尋與無縫背景下載引擎 (A0)",
+  "node_reference": "A0",
+  "activities": [
+    {
+      "id": "A1",
+      "title": "Torrent/Magnet 搜尋解析",
+      "description": "從 Libgen/公網搜尋結果中提取種子直鏈與 Magnet URI",
+      "decomposition": null
+    },
+    {
+      "id": "A2",
+      "title": "雙軌智慧調度與轉移",
+      "description": "HTTP 優先調度，若失敗自動無縫切換至 P2P 下載佇列",
+      "decomposition": null
+    },
+    {
+      "id": "A3",
+      "title": "非同步 P2P 下載",
+      "description": "透過 Tracker 宣告與 DHT 網路向 Peers 抓取 Pieces",
+      "decomposition": null
+    },
+    {
+      "id": "A4",
+      "title": "單檔提取與雜湊校驗",
+      "description": "從 Torrent 封包中提取目標單檔並進行 MD5/SHA256 校驗",
+      "decomposition": null
+    },
+    {
+      "id": "A5",
+      "title": "內容抽取與索引落地",
+      "description": "觸發 IngestionPipeline 抽取 Markdown 文本並建立 FTS5 索引",
+      "decomposition": null
+    }
+  ],
+  "arrows": [
+    {
+      "id": "AR1",
+      "source": "EXTERNAL",
+      "target": "A1:input",
+      "type": "input",
+      "label": "圖書檢索關鍵字/ISBN"
+    },
+    {
+      "id": "AR2",
+      "source": "EXTERNAL",
+      "target": "A1:control",
+      "type": "control",
+      "label": "Libgen 啟用鏡像與 Tracker 池"
+    },
+    {
+      "id": "AR3",
+      "source": "A1:output",
+      "target": "A2:input",
+      "label": "書目 Manifestation (含 Magnet/HTTP)"
+    },
+    {
+      "id": "AR4",
+      "source": "A2:output",
+      "target": "A3:input",
+      "label": "P2P 下載任務 (Failover/純P2P)"
+    },
+    {
+      "id": "AR5",
+      "source": "A3:output",
+      "target": "A4:input",
+      "label": "已下載之 Raw Pieces 區塊"
+    },
+    {
+      "id": "AR6",
+      "source": "A4:output",
+      "target": "A5:input",
+      "label": "已驗證之本地圖書原檔 (/data/raw)"
+    },
+    {
+      "id": "AR7",
+      "source": "A5:output",
+      "target": "EXTERNAL",
+      "label": "標記 💾 本地已存與 1-Tap 閱覽"
+    },
+    {
+      "id": "AR8",
+      "source": "EXTERNAL",
+      "target": "A1:mechanism",
+      "type": "mechanism",
+      "label": "LibgenCrawler / BeautifulSoup"
+    },
+    {
+      "id": "AR9",
+      "source": "EXTERNAL",
+      "target": "A2:mechanism",
+      "type": "mechanism",
+      "label": "DownloadWorker (雙軌調度器)"
+    },
+    {
+      "id": "AR10",
+      "source": "EXTERNAL",
+      "target": "A3:mechanism",
+      "type": "mechanism",
+      "label": "P2PDownloadEngine / aiobt"
+    },
+    {
+      "id": "AR11",
+      "source": "EXTERNAL",
+      "target": "A4:mechanism",
+      "type": "mechanism",
+      "label": "IntegrityVerifier (MD5/SHA256)"
+    },
+    {
+      "id": "AR12",
+      "source": "EXTERNAL",
+      "target": "A5:mechanism",
+      "label": "IngestionPipeline / PyMuPDF"
+    }
+  ]
+}

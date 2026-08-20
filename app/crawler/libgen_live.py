@@ -40,6 +40,104 @@ class LibgenCrawler:
                 pass
         return self.MIRRORS
 
+    # Magnet URI 與 .torrent 直鏈辨識樣式
+    MAGNET_RE = re.compile(r"magnet:\?[^\s\"'<>]+", re.IGNORECASE)
+    BTIH_RE = re.compile(r"xt=urn:btih:([a-zA-Z0-9]+)", re.IGNORECASE)
+    TORRENT_HREF_RE = re.compile(r"\.torrent(\?|$|#)", re.IGNORECASE)
+
+    @staticmethod
+    def parse_magnet_uri(magnet: str) -> Dict[str, Any]:
+        """解析 Magnet URI，取出 info_hash / display_name / trackers。
+
+        非 magnet 字串一律回傳 info_hash=None（而非空字串），
+        使「不是 magnet」與「是 magnet 但無 hash」不共用同一個輸出。
+        """
+        empty: Dict[str, Any] = {"info_hash": None, "display_name": None, "trackers": []}
+        if not magnet or not isinstance(magnet, str):
+            return empty
+        if not magnet.lower().startswith("magnet:"):
+            return empty
+
+        query = magnet[magnet.find("?") + 1:] if "?" in magnet else ""
+        params = urllib.parse.parse_qs(query, keep_blank_values=False)
+
+        info_hash = None
+        for xt in params.get("xt", []):
+            m = LibgenCrawler.BTIH_RE.search(f"xt={xt}")
+            if m:
+                info_hash = m.group(1).lower()
+                break
+
+        display_names = params.get("dn", [])
+        trackers = [t for t in params.get("tr", []) if t]
+
+        return {
+            "info_hash": info_hash,
+            "display_name": display_names[0] if display_names else None,
+            "trackers": trackers,
+        }
+
+    @classmethod
+    def _extract_torrent_sources(cls, row_or_cols: Any, base_url: str = "") -> Dict[str, Any]:
+        """自書目列（BeautifulSoup Tag 或 Tag 串列）提取 .torrent 直鏈與 Magnet URI。
+
+        回傳 dict：torrent_url / magnet_uri / download_protocol / peers_count。
+        找不到任何 P2P 來源時 download_protocol 維持 'http'（而非空字串）。
+        """
+        result: Dict[str, Any] = {
+            "torrent_url": None,
+            "magnet_uri": None,
+            "download_protocol": "http",
+            "peers_count": None,
+        }
+
+        tags = row_or_cols if isinstance(row_or_cols, (list, tuple)) else [row_or_cols]
+
+        anchors = []
+        for tag in tags:
+            if tag is None:
+                continue
+            try:
+                anchors.extend(tag.find_all("a"))
+            except AttributeError:
+                continue
+
+        for a in anchors:
+            href = a.get("href", "") or ""
+            if not href:
+                continue
+
+            # 1. Magnet：href 直接是 magnet:，或內嵌於 query string
+            if href.lower().startswith("magnet:"):
+                if not result["magnet_uri"]:
+                    result["magnet_uri"] = href
+                continue
+
+            # 2. .torrent 直鏈（相對路徑補上 base_url）
+            if cls.TORRENT_HREF_RE.search(href):
+                if not result["torrent_url"]:
+                    result["torrent_url"] = f"{base_url}{href}" if href.startswith("/") and base_url else href
+                continue
+
+        # 3. 保底：整列純文字中掃描裸露的 magnet 連結（部分鏡像以文字呈現）
+        if not result["magnet_uri"]:
+            for tag in tags:
+                if tag is None:
+                    continue
+                try:
+                    text = tag.get_text(" ", strip=True)
+                except AttributeError:
+                    continue
+                m = cls.MAGNET_RE.search(text)
+                if m:
+                    result["magnet_uri"] = m.group(0)
+                    break
+
+        if result["magnet_uri"] or result["torrent_url"]:
+            result["download_protocol"] = "torrent"
+
+        return result
+
     @staticmethod
     def parse_size_to_bytes(size_str: str) -> int:
         """解析如 '12.5 Mb', '800 Kb', '1.2 Gb' 為位元組數。"""
@@ -205,6 +303,9 @@ class LibgenCrawler:
 
             format_type = "epub" if extension == "epub" else "pdf_born_digital"
 
+            # 提取 Torrent / Magnet 來源（掃描整列，不限於鏡像欄）
+            torrent_src = self._extract_torrent_sources(row, base_url)
+
             items.append({
                 "work_id": f"libgen_{md5_val}",
                 "title": clean_title,
@@ -219,6 +320,10 @@ class LibgenCrawler:
                 "md5": md5_val,
                 "availability_tier": 2,
                 "mirror_links": mirror_links,
+                "torrent_url": torrent_src["torrent_url"],
+                "magnet_uri": torrent_src["magnet_uri"],
+                "download_protocol": torrent_src["download_protocol"],
+                "peers_count": torrent_src["peers_count"],
                 "source": "libgen"
             })
 
@@ -274,6 +379,9 @@ class LibgenCrawler:
 
             format_type = "epub" if extension == "epub" else "pdf_born_digital"
 
+            # 提取 Torrent / Magnet 來源（掃描整列，不限於鏡像欄）
+            torrent_src = self._extract_torrent_sources(row, base_url)
+
             items.append({
                 "work_id": f"libgen_{md5_val}",
                 "title": title,
@@ -288,6 +396,10 @@ class LibgenCrawler:
                 "md5": md5_val,
                 "availability_tier": 2,
                 "mirror_links": mirror_links,
+                "torrent_url": torrent_src["torrent_url"],
+                "magnet_uri": torrent_src["magnet_uri"],
+                "download_protocol": torrent_src["download_protocol"],
+                "peers_count": torrent_src["peers_count"],
                 "source": "libgen"
             })
 

@@ -43,10 +43,19 @@ CREATE TABLE IF NOT EXISTS manifestation (
     license_id TEXT,
     is_retrievable INTEGER NOT NULL DEFAULT 1,
     external_url TEXT,
+    -- P2P / BitTorrent 來源欄位（aggregator_torrent-p2p-integration Phase 1）
+    torrent_url TEXT,
+    magnet_uri TEXT,
+    download_protocol TEXT NOT NULL DEFAULT 'http',
+    peers_count INTEGER,
     FOREIGN KEY (work_id) REFERENCES work(work_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_manifestation_work ON manifestation(work_id);
+-- 注：download_protocol 等新增欄位的索引不得寫在此處。本檔經 executescript 執行於
+-- DAO 欄位遷移之前；對舊 DB，CREATE TABLE IF NOT EXISTS 會静默 no-op（舊表無新欄位），
+-- 紧接著的 CREATE INDEX 就會以 "no such column" 中斷啟動。
+-- 新欄位索引一律由 CatalogDAO.apply_column_migrations() 於 ALTER 完成後建立。
 
 CREATE TABLE IF NOT EXISTS file_object (
     file_id TEXT PRIMARY KEY,
@@ -86,6 +95,11 @@ CREATE TABLE IF NOT EXISTS download_job (
     error_message TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    -- P2P / BitTorrent 來源與即時 Peer 狀態（Phase 1）
+    torrent_url TEXT,
+    magnet_uri TEXT,
+    download_protocol TEXT NOT NULL DEFAULT 'http',
+    peers_count INTEGER,
     FOREIGN KEY (work_id) REFERENCES work(work_id) ON DELETE CASCADE
 );
 

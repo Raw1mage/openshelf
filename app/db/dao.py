@@ -101,9 +101,62 @@ DEFAULT_LIBGEN_MIRRORS: List[Dict[str, Any]] = [
 class CatalogDAO:
     """封裝 SQLite 資料存取邏輯。"""
 
+    # 對既有資料庫補上的新增欄位（table -> [(column, DDL type/default)]）。
+    # schema.sql 走 executescript 無法搭載 ALTER TABLE（第二次啟動會 duplicate column 中斷），
+    # 故新增欄位對舊 DB 的補齊在此以 PRAGMA table_info 實測後条件式執行。
+    _COLUMN_MIGRATIONS: Dict[str, List[Tuple[str, str]]] = {
+        "manifestation": [
+            ("torrent_url", "TEXT"),
+            ("magnet_uri", "TEXT"),
+            ("download_protocol", "TEXT NOT NULL DEFAULT 'http'"),
+            ("peers_count", "INTEGER"),
+        ],
+        "download_job": [
+            ("torrent_url", "TEXT"),
+            ("magnet_uri", "TEXT"),
+            ("download_protocol", "TEXT NOT NULL DEFAULT 'http'"),
+            ("peers_count", "INTEGER"),
+        ],
+    }
+
     def __init__(self, engine: DatabaseEngine = None):
         self.engine = engine or DatabaseEngine()
+        self.apply_column_migrations()
         self.seed_categories_if_needed()
+
+    # 依賴新增欄位的索引：必須在 ALTER 補完欄位之後才能建立，
+    # 否則對舊 DB 會以 "no such column" 中斷啟動。
+    _POST_MIGRATION_INDEXES: List[str] = [
+        "CREATE INDEX IF NOT EXISTS idx_manifestation_protocol ON manifestation(download_protocol)",
+        "CREATE INDEX IF NOT EXISTS idx_download_job_protocol ON download_job(download_protocol)",
+    ]
+
+    def apply_column_migrations(self) -> List[str]:
+        """對既有 DB 補上缺少的欄位，回傳實際執行的 ALTER 清單（已是最新則為空）。
+
+        回傳值刻意不是 bool：「無需遷移」與「遷移失敗」不得共用同一個輸出——
+        失敗會拋出例外，成功則回傳可檢驗的欄位名清單。
+        """
+        applied: List[str] = []
+        with self.engine.session() as conn:
+            for table, columns in self._COLUMN_MIGRATIONS.items():
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,)
+                ).fetchone()
+                if not table_exists:
+                    continue
+                existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                for col_name, col_ddl in columns:
+                    if col_name in existing:
+                        continue
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_ddl}")
+                    applied.append(f"{table}.{col_name}")
+
+            # 欄位補齊後才建立相依索引（IF NOT EXISTS，可重複執行）
+            for index_ddl in self._POST_MIGRATION_INDEXES:
+                conn.execute(index_ddl)
+        return applied
 
     def seed_categories_if_needed(self) -> None:
         """初次啟動時自動寫入分類樹與預設書單種子資料。"""
@@ -241,20 +294,69 @@ class CatalogDAO:
         format_type: str = "unknown",
         version: str = "unknown",
         origin: str = "local",
-        external_url: Optional[str] = None
+        external_url: Optional[str] = None,
+        torrent_url: Optional[str] = None,
+        magnet_uri: Optional[str] = None,
+        download_protocol: str = "http",
+        peers_count: Optional[int] = None
     ) -> str:
-        """新增 Manifestation 實體。"""
+        """新增 Manifestation 實體（含 Torrent / Magnet 來源屬性）。"""
         mid = self.generate_id("mf")
         with self.engine.session() as conn:
             conn.execute(
                 """
                 INSERT INTO manifestation (
-                    manifestation_id, work_id, version, format, origin, is_retrievable, external_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    manifestation_id, work_id, version, format, origin, is_retrievable, external_url,
+                    torrent_url, magnet_uri, download_protocol, peers_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (mid, work_id, version, format_type, origin, 1, external_url)
+                (
+                    mid, work_id, version, format_type, origin, 1, external_url,
+                    torrent_url, magnet_uri, download_protocol or "http", peers_count
+                )
             )
         return mid
+
+    def update_manifestation_torrent_source(
+        self,
+        manifestation_id: str,
+        torrent_url: Optional[str] = None,
+        magnet_uri: Optional[str] = None,
+        download_protocol: Optional[str] = None,
+        peers_count: Optional[int] = None
+    ) -> bool:
+        """回寫已知 Manifestation 之 Torrent / Magnet 來源（僅更新非 None 欄位）。"""
+        fields = {
+            "torrent_url": torrent_url,
+            "magnet_uri": magnet_uri,
+            "download_protocol": download_protocol,
+            "peers_count": peers_count,
+        }
+        updates = {k: v for k, v in fields.items() if v is not None}
+        if not updates:
+            return False
+        set_sql = ", ".join(f"{k} = ?" for k in updates)
+        with self.engine.session() as conn:
+            cur = conn.execute(
+                f"UPDATE manifestation SET {set_sql} WHERE manifestation_id = ?",
+                list(updates.values()) + [manifestation_id]
+            )
+            return cur.rowcount > 0
+
+    def get_torrent_sources_for_work(self, work_id: str) -> List[Dict[str, Any]]:
+        """取出某 Work 底下具備 Torrent 或 Magnet 來源的 Manifestation。"""
+        with self.engine.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT manifestation_id, work_id, format, torrent_url, magnet_uri,
+                       download_protocol, peers_count
+                FROM manifestation
+                WHERE work_id = ?
+                  AND (torrent_url IS NOT NULL OR magnet_uri IS NOT NULL)
+                """,
+                (work_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def add_file_object(
         self,

@@ -1,0 +1,24 @@
+[
+  {
+    "title": "Torrent/Magnet 雙軌下載與自動 Failover 流程",
+    "actors": [
+      { "id": "user", "name": "使用者 (Client UI)", "type": "human" },
+      { "id": "worker", "name": "DownloadWorker (雙軌調度器)", "type": "service" },
+      { "id": "http", "name": "HTTPClient (Range 斷點續傳)", "type": "component" },
+      { "id": "p2p", "name": "P2PDownloadEngine (BitTorrent)", "type": "component" },
+      { "id": "tracker", "name": "Tracker Pool / DHT", "type": "external" },
+      { "id": "pipeline", "name": "IngestionPipeline (抽取與索引)", "type": "service" }
+    ],
+    "messages": [
+      { "from": "user", "to": "worker", "label": "enqueue_download(work_id, sources)" },
+      { "from": "worker", "to": "http", "label": "try_http_download(http_urls)" },
+      { "from": "http", "to": "worker", "label": "http_failed_404_or_timeout" },
+      { "from": "worker", "to": "p2p", "label": "fallback_to_p2p(magnet_uri)" },
+      { "from": "p2p", "to": "tracker", "label": "announce & find_peers()" },
+      { "from": "tracker", "to": "p2p", "label": "peer_list" },
+      { "from": "p2p", "to": "worker", "label": "download_completed(file_path, md5)" },
+      { "from": "worker", "to": "pipeline", "label": "ingest(raw_file)" },
+      { "from": "pipeline", "to": "user", "label": "status: ready (💾 本地已存)" }
+    ]
+  }
+]

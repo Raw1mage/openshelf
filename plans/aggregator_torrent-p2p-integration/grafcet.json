@@ -1,0 +1,68 @@
+[
+  {
+    "StepNumber": 1,
+    "ModuleRef": "A1",
+    "StepType": "initial",
+    "StepAction": "系統待機：監聽圖書搜尋或下載請求",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [6],
+    "LinkOutputNumber": [2],
+    "Condition": ["收到圖書下載指令（含 HTTP/Magnet 來源）"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 2,
+    "ModuleRef": "A2",
+    "StepType": "normal",
+    "StepAction": "雙軌調度：優先探測 HTTP 直鏈並嘗試 Range 斷點續傳下載",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [1],
+    "LinkOutputNumber": [3],
+    "Condition": ["HTTP 下載失敗（404/5xx/逾時）或無可用 HTTP 鏡像"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 3,
+    "ModuleRef": "A3",
+    "StepType": "normal",
+    "StepAction": "自動轉移：啟用 P2PDownloadEngine，向 Tracker/DHT 宣告並握手 Peers",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [2],
+    "LinkOutputNumber": [4],
+    "Condition": ["成功連線 Peers 並開始抓取目標單檔 Pieces"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 4,
+    "ModuleRef": "A4",
+    "StepType": "normal",
+    "StepAction": "單檔提取：組裝完整檔案並校驗 MD5/SHA256 雜湊",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [3],
+    "LinkOutputNumber": [5],
+    "Condition": ["校驗通過，落地至 /data/raw 原檔庫"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 5,
+    "ModuleRef": "A5",
+    "StepType": "normal",
+    "StepAction": "索引落地：IngestionPipeline 抽取 Markdown 文本並建立 FTS5 全文索引",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [4],
+    "LinkOutputNumber": [6],
+    "Condition": ["全文索引與 FRBR 關聯更新完畢"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 6,
+    "ModuleRef": "A5",
+    "StepType": "normal",
+    "StepAction": "書庫就緒：標記「💾 本地已存」，前端提供 1-Tap 閱覽並於背景限時做種",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [5],
+    "LinkOutputNumber": [1],
+    "Condition": ["任務完成，釋放資源返回待機"],
+    "SubGrafcet": []
+  }
+]

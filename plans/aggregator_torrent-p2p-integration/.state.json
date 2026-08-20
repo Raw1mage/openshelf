@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "state": "planned",
+  "profile": [],
+  "history": [
+    {
+      "from": null,
+      "to": "proposed",
+      "at": "2026-08-20T02:38:52.622Z",
+      "by": "pkcs12",
+      "mode": "new",
+      "reason": "initial spec created via plan-init.ts"
+    },
+    {
+      "from": "proposed",
+      "to": "designed",
+      "at": "2026-08-20T02:49:05.538Z",
+      "by": "pkcs12",
+      "mode": "promote",
+      "reason": "Design and modeling completed"
+    },
+    {
+      "from": "designed",
+      "to": "planned",
+      "at": "2026-08-20T02:49:49.525Z",
+      "by": "pkcs12",
+      "mode": "promote",
+      "reason": "Tasks breakdown and handoff contract completed"
+    }
+  ],
+  "tasks_contract": {
+    "version": "1"
+  }
+}

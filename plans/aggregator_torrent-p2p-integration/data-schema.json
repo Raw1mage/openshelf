@@ -1,0 +1,26 @@
+{
+  "title": "Torrent / Magnet 資料綱要擴充",
+  "entities": [
+    {
+      "name": "Manifestation",
+      "fields": [
+        { "name": "manifestation_id", "type": "string", "primary_key": true },
+        { "name": "work_id", "type": "string" },
+        { "name": "format", "type": "string" },
+        { "name": "torrent_url", "type": "string?", "description": ".torrent 檔案 URL" },
+        { "name": "magnet_uri", "type": "string?", "description": "Magnet 協定 URI" }
+      ]
+    },
+    {
+      "name": "DownloadJob",
+      "fields": [
+        { "name": "job_id", "type": "string", "primary_key": true },
+        { "name": "work_id", "type": "string" },
+        { "name": "status", "type": "string" },
+        { "name": "protocol", "type": "string", "description": "http | torrent" },
+        { "name": "peers_count", "type": "integer", "description": "P2P 連線 Peer 數" },
+        { "name": "progress_percent", "type": "float" }
+      ]
+    }
+  ]
+}

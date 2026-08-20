@@ -26,7 +26,33 @@ class FileObjectRead(BaseModel):
     produced_at: Optional[str] = None
 
 
-class ManifestationRead(BaseModel):
+# 下載協定種類：http 直鏈 / torrent (含 magnet) P2P
+DownloadProtocol = Literal["http", "torrent"]
+
+
+class TorrentSourceMixin(BaseModel):
+    """Torrent / Magnet 來源屬性（P2P 整合共用欄位）。
+
+    `peers_count` 為 None 表示「未知」（例如搜尋結果頁未揭露 Peer 數），
+    與 0（已查詢且確實無 Peer）語意不同，不得混用。
+    """
+    torrent_url: Optional[str] = None
+    magnet_uri: Optional[str] = None
+    download_protocol: DownloadProtocol = "http"
+    peers_count: Optional[int] = None
+
+
+class ManifestationCreate(TorrentSourceMixin):
+    work_id: str
+    version: Optional[str] = "unknown"
+    format: Optional[str] = "unknown"
+    origin: Literal["local", "external"] = "local"
+    license_id: Optional[str] = None
+    is_retrievable: int = 1
+    external_url: Optional[str] = None
+
+
+class ManifestationRead(TorrentSourceMixin):
     manifestation_id: str
     work_id: str
     version: Optional[str] = "unknown"
@@ -82,7 +108,7 @@ class WorkDetailRead(WorkRead):
     reading_state: Optional[ReadingStateRead] = None
 
 
-class SearchResultItem(BaseModel):
+class SearchResultItem(TorrentSourceMixin):
     work_id: str
     title: str
     authors_display: Optional[str] = None
@@ -94,6 +120,28 @@ class SearchResultItem(BaseModel):
     availability_tier: int = 0
     snippet: Optional[str] = None
     progress_ratio: Optional[float] = None
+
+
+class DownloadJob(TorrentSourceMixin):
+    """下載任務之序列化模型（API 邊界用）。
+
+    註：`app/crawler/download_worker.py` 內另有同名的執行期物件，
+    其雙軌調度行為屬 Phase 3 範圍，本階段不觸碰。
+    """
+    job_id: str
+    work_id: Optional[str] = None
+    md5: Optional[str] = None
+    title: Optional[str] = None
+    authors: Optional[str] = None
+    extension: Optional[str] = None
+    status: str = "queued"
+    progress_percent: float = 0.0
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    retry_count: int = 0
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class SearchResponse(BaseModel):

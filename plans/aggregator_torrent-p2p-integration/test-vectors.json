@@ -1,0 +1,22 @@
+[
+  {
+    "name": "parse_magnet_uri",
+    "input": "magnet:?xt=urn:btih:3f99647c7584e05a0ab08155686a68e2&dn=book.epub&tr=udp://tracker.opentrackr.org:1337",
+    "expected": {
+      "info_hash": "3f99647c7584e05a0ab08155686a68e2",
+      "display_name": "book.epub",
+      "trackers": ["udp://tracker.opentrackr.org:1337"]
+    }
+  },
+  {
+    "name": "auto_failover_trigger",
+    "input": {
+      "http_status": 404,
+      "magnet_available": true
+    },
+    "expected": {
+      "failover_triggered": true,
+      "next_protocol": "torrent"
+    }
+  }
+]
