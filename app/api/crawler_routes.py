@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.crawler.libgen_live import LibgenCrawler
@@ -53,32 +54,56 @@ async def live_search(
     """即時檢索公網 Libgen 書庫並標註本地落地與佇列中狀態。"""
     raw_results = await crawler.search(q)
 
-    # 標註本地落地狀態與佇列狀態
-    for item in raw_results:
-        md5 = (item.get("md5") or "").lower()
-        if md5:
-            local_wid = dao.find_work_by_hash(md5)
-            if local_wid:
-                item["availability_tier"] = 0
-                item["local_work_id"] = local_wid
-                continue
-
-            # 檢查是否在當前下載佇列中
-            for j in worker.jobs.values():
-                if j.md5 == md5:
-                    item["queue_status"] = j.status
-                    item["queue_progress"] = j.progress_percent
-                    item["queue_job_id"] = j.job_id
-                    if j.status == "completed" and j.work_id:
-                        item["availability_tier"] = 0
-                        item["local_work_id"] = j.work_id
-                    break
+    # 標註工作含同步 SQLite I/O。本路由是 async def，直接跑在事件迴圈執行緒上，
+    # 因此整段丟進 threadpool——否則爬蟲期間會卡住整個 process 的所有請求，
+    # 包括完全不碰 DB 的端點（見 BR-20260820_200000）。
+    await run_in_threadpool(_annotate_local_status, raw_results, dao, worker)
 
     return {
         "query": q,
         "total": len(raw_results),
         "items": raw_results
     }
+
+
+def _annotate_local_status(
+    raw_results: List[Dict[str, Any]],
+    dao: CatalogDAO,
+    worker: DownloadWorker
+) -> None:
+    """就地標註本地落地狀態與佇列狀態。純同步，預期在 threadpool 內執行。
+
+    本地命中改為單次批次查詢（原本是每筆一次 DB 往返）。
+    """
+    md5s = []
+    for item in raw_results:
+        md5 = (item.get("md5") or "").lower()
+        if md5:
+            md5s.append(md5)
+
+    local_map = dao.find_works_by_hashes(md5s) if md5s else {}
+
+    for item in raw_results:
+        md5 = (item.get("md5") or "").lower()
+        if not md5:
+            continue
+
+        local_wid = local_map.get(md5)
+        if local_wid:
+            item["availability_tier"] = 0
+            item["local_work_id"] = local_wid
+            continue
+
+        # 檢查是否在當前下載佇列中
+        for j in worker.jobs.values():
+            if j.md5 == md5:
+                item["queue_status"] = j.status
+                item["queue_progress"] = j.progress_percent
+                item["queue_job_id"] = j.job_id
+                if j.status == "completed" and j.work_id:
+                    item["availability_tier"] = 0
+                    item["local_work_id"] = j.work_id
+                break
 
 
 @router.post("/download")

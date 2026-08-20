@@ -338,6 +338,64 @@ class CatalogDAO:
                 return row_id["work_id"]
         return None
 
+    def find_works_by_hashes(self, hash_vals: List[str]) -> Dict[str, str]:
+        """批次版 find_work_by_hash：一次查詢取代 N 次往返。
+
+        回傳 {hash_val: work_id}，僅含命中者；未命中的 hash 不會出現在鍵中
+        （呼叫端用 .get() 取得 None，語意與逐筆版的 Optional 回傳一致）。
+
+        與逐筆版的等價性由 tests/test_crawler_batch_hash_lookup.py 保證，
+        含空清單與全部未命中兩個邊界。
+        """
+        if not hash_vals:
+            return {}
+
+        # 去重但保留原始值（呼叫端傳進來的大小寫由呼叫端負責正規化，
+        # 此處不再 lower()，以免與逐筆版產生行為差異）
+        uniq = list(dict.fromkeys(hash_vals))
+        found: Dict[str, str] = {}
+
+        # SQLite 的變數上限預設 999（新版 32766）。分塊以免筆數成長後炸掉。
+        CHUNK = 300
+        with self.engine.session() as conn:
+            for i in range(0, len(uniq), CHUNK):
+                chunk = uniq[i:i + CHUNK]
+                marks = ",".join("?" * len(chunk))
+
+                # 第一段：file_object 的 sha256 / md5，對應逐筆版的第一個查詢
+                rows = conn.execute(
+                    f"""
+                    SELECT f.sha256, f.md5, m.work_id FROM file_object f
+                    JOIN manifestation m ON f.manifestation_id = m.manifestation_id
+                    WHERE f.sha256 IN ({marks}) OR f.md5 IN ({marks})
+                    """,
+                    chunk + chunk
+                ).fetchall()
+                for r in rows:
+                    for col in ("sha256", "md5"):
+                        v = r[col]
+                        if v and v in uniq and v not in found:
+                            found[v] = r["work_id"]
+
+                # 第二段：identifier 表，對應逐筆版的 fallback 查詢。
+                # 逐筆版只在第一段未命中時才查，故此處僅補未命中者。
+                missing = [h for h in chunk if h not in found]
+                if missing:
+                    marks2 = ",".join("?" * len(missing))
+                    rows_id = conn.execute(
+                        f"""
+                        SELECT value, work_id FROM identifier
+                        WHERE (scheme = 'sha256' OR scheme = 'md5')
+                          AND value IN ({marks2})
+                        """,
+                        missing
+                    ).fetchall()
+                    for r in rows_id:
+                        if r["value"] not in found:
+                            found[r["value"]] = r["work_id"]
+
+        return found
+
     def add_identifier(self, work_id: str, scheme: str, value: str, confidence: str = "asserted") -> None:
         """新增識別碼（如 MD5, ISBN, DOI）。"""
         with self.engine.session() as conn:
