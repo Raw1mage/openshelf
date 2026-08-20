@@ -143,7 +143,37 @@ FTS5 的 `"..."` 是 **phrase 運算子**：它要求引號內的 token 序列**
 **`"Concept Operating"` → 0 是判準關鍵**：它沒有任何標點，只是詞序不同。
 所以 BR 原本寫的「標點導致失敗」只是症狀的一半——**根因是 phrase 語意，標點只是最容易觸發它的形式**。
 
-## 缺陷 B — `publisher` 不在 FTS 索引內
+## ~~缺陷 B — `publisher` 不在 FTS 索引內~~ —— **本段是錯的，已撤回**
+
+> **勘誤（2026-08-20，handler `ses_fe2618ae6ffesJJq3LCVuuryGp` 推翻，值星官確認）**
+>
+> 下方原文說「`work` 表**有** `publisher` 欄（schema.sql 內 grep rc=0）」——**兩個子句都不成立**。
+>
+> ```
+> grep -n "publisher" app/db/schema.sql        → rc=1，零筆
+> CONTROL grep -c "title" app/db/schema.sql     → 4        （證明 grep 讀得到檔）
+> 線上 PRAGMA table_info(work)  12 欄：has publisher = False，CONTROL has title = True
+> 線上 work_fts 欄位：[work_id, title, authors_display, content]
+> ```
+>
+> **根本沒有 `publisher` 這個欄位。** 不是「有欄位但沒進索引」，是從來就不存在。
+>
+> **我這個 `rc=0` 是怎麼來的**（自我覆核）：我當時寫的是 `grep -n "publisher" app/db/schema.sql | head -5`，
+> 那個 `$?` 是 **`head` 的退出碼**，不是 `grep` 的。`head` 永遠回 0。
+> 這正是我貼進每一張派工單的判準①裡點名的那個陷阱（`cmd | tail` 取到 tail 的 `$?`）。
+> **我自己犯了，而且犯在 BR 裡——這會讓下一個人為一個不存在的欄位設計遷移。**
+>
+> **`Wiley` 實際是搜得到的**：線上 FTS 命中 **6 筆**，經由已被索引的 `content` 欄
+> （PDF 抽取全文含版權頁，snippet 佐證：`"... ABRAHAM SILBERSCHATZ ... John Wiley & Sons"`）。
+>
+> **這直接解掉了我原本担心的取捨**：我担心「選 AND 的話 `Wiley` 永遠不在索引裡，
+> `Operating System Concept Wiley` 仍歸零」——**前提不成立，那個代價不存在**。
+> 實打 `Operating System Concept,Wiley` 修後 **6 筆**。
+>
+> 以下原文保留作為錯誤紀錄，**不得依據它開工**。
+
+<details>
+<summary>原文（已證實為錯）</summary>
 
 `app/db/schema.sql:107-113`：
 
@@ -163,6 +193,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS work_fts USING fts5(
 
 這解釋了為何 `Operating System Concept,Wiley` 就算修好缺陷 A 也仍可能是 0：
 兩個獨立缺陷疊在同一個查詢上。
+
+</details>
 
 ## 實打對照（容器 API，修復前）
 
