@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 import uuid
@@ -11,6 +12,16 @@ from bs4 import BeautifulSoup
 from app.models.catalog import LibgenMirrorValidationReport
 from app.crawler.libgen_live import LibgenCrawler
 
+log = logging.getLogger(__name__)
+
+
+class BRDispatchTargetMissing(RuntimeError):
+    """BR 落點目錄在寫入當下不存在——部署契約（掛載）失效的具名訊號。
+
+    存在的理由是「具名」：缺目錄時 `write_text` 丟的是裸 `FileNotFoundError`，
+    它與「磁碟上某個無關檔案不見了」共用同一個型別，呼叫端無法只針對本情況處置。
+    """
+
 
 class MirrorValidator:
     """Libgen 鏡像來源上線前預檢驗證器（Pre-flight Validator）與自動 BR 發送系統。"""
@@ -20,8 +31,43 @@ class MirrorValidator:
     TEST_MD5 = "00000000000000000000000000000000"
 
     def __init__(self, issues_dir: Optional[Path] = None):
+        # BR 落點有兩種來源，語意完全不同，不可共用同一條建目錄邏輯：
+        #
+        #   1. 呼叫端「顯式指定」（測試 fixture、一次性工具）——位置是呼叫端自己
+        #      挑的，建出來就是它要的意思，照建、不出聲。
+        #   2. 走「預設值」——這是正式部署路徑，而這個目錄是**部署契約**的一部分：
+        #      容器內 /app/issues 必須由 docker-compose 的 `./issues:/app/issues`
+        #      掛載進來。掛載在，目錄必然已存在（docker 在掛載時就備妥）；掛載被
+        #      拿掉，目錄就不存在。
+        #
+        # 原本這裡對兩者一視同仁地 `mkdir(parents=True, exist_ok=True)`，於是第 2
+        # 種情況下「掛載不見了」被靜默補成一個容器 rebuild 即蒸發的 ephemeral 目錄：
+        # dispatch_br 寫進去的診斷 BR 全部消失、host 端 issues/ 永遠看不到、前端
+        # 清單恆為 total=0——「真的沒有 BR」與「BR 寫到別的地方去了」共用同一個輸出，
+        # 零錯誤、零 log（BR-20260820_223000 實測）。
+        #
+        # 判準用「目錄是否已存在」當掛載存在的代理指標，是因為它正是該次失效形狀
+        # 的唯一分界線；它的已知盲點記在 dispatch_br 上方。
+        explicit = issues_dir is not None
         self.issues_dir = issues_dir or (Path(__file__).parent.parent.parent / "issues")
-        self.issues_dir.mkdir(parents=True, exist_ok=True)
+        self.issues_dir_is_explicit = explicit
+        self.issues_dir_missing = False
+
+        if explicit:
+            self.issues_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # 不建。建了就等於把「掛載失效」這個事實抹掉，之後沒有任何人能區分。
+            self.issues_dir_missing = not self.issues_dir.is_dir()
+            if self.issues_dir_missing:
+                log.error(
+                    "BR 落點目錄不存在且不予自動建立：%s。"
+                    " 這是部署契約失效訊號——容器內該路徑應由 docker-compose 的"
+                    " `./issues:/app/issues` 掛載提供。缺少掛載時自動建出來的目錄會在"
+                    " rebuild 時連同所有自動產生的診斷 BR 一起消失，且不會有任何錯誤，"
+                    " 前端 /api/settings/libgen-mirrors/issues 會恆為 total=0"
+                    " （BR-20260820_223000）。請確認掛載存在後重啟容器。",
+                    self.issues_dir,
+                )
         self.crawler = LibgenCrawler()
 
     async def validate_mirror(self, raw_url: str, auto_dispatch_br: bool = True) -> LibgenMirrorValidationReport:
@@ -49,11 +95,9 @@ class MirrorValidator:
             if "library.lol" in url or "lol" in url or "gateway" in url:
                 report = await self._test_gateway_mirror(client, url, start_time)
                 if report.validation_status == "incompatible_layout" and auto_dispatch_br:
-                    br_id, br_path = await asyncio.to_thread(
-                        self.dispatch_br, url, report.status_code, "Gateway 結構變更或無效", report.error_message or "")
-                    report.br_id = br_id
-                    report.br_path = str(br_path)
-                    report.dispatched_br = True
+                    await self._try_dispatch_br(
+                        report, url, report.status_code,
+                        "Gateway 結構變更或無效", report.error_message or "")
                 return report
 
             # 2. 探測 Libgen.li 系列適配器
@@ -129,12 +173,8 @@ class MirrorValidator:
                     )
 
                     if auto_dispatch_br:
-                        # dispatch_br 內含同步 file_path.write_text()（:238）。
-                        br_id, br_path = await asyncio.to_thread(
-                            self.dispatch_br, url, home_resp.status_code, snippet, error_msg)
-                        report.br_id = br_id
-                        report.br_path = str(br_path)
-                        report.dispatched_br = True
+                        await self._try_dispatch_br(
+                            report, url, home_resp.status_code, snippet, error_msg)
 
                     return report
                 else:
@@ -202,13 +242,83 @@ class MirrorValidator:
                 error_message=f"Gateway 連線逾時: {str(e)}"
             )
 
+    async def _try_dispatch_br(
+        self,
+        report: LibgenMirrorValidationReport,
+        url: str,
+        status_code: Optional[int],
+        html_snippet: str,
+        failure_reason: str,
+    ) -> None:
+        """嘗試落檔診斷 BR，並把結果如實反映到 report 上。
+
+        取捨（本包的核心判斷，明寫理由）：落點失效時**不讓 validate_mirror 整個炸掉**。
+        BR 落檔是「診斷副作用」，鏡像驗證才是使用者要的主功能；讓副作用的失敗升級成
+        路由 500，等於因為記不了帳就拒絕做生意。但也**不得靜默吞掉**——那正是本 BR 要
+        修的病。所以走第三條路：
+
+          - 例外只在此處被接住，不再往上傳（主功能存活）
+          - log.error 出聲（可觀測）
+          - `dispatched_br` 維持 False、`br_path` 維持 None（欄位如實，不謊報成功）
+          - `error_message` 追加一句，讓失效**沿著使用者看得到的通道**浮上來，
+            而不只是留在容器 log 裡等人去翻
+
+        最後一項是關鍵：只寫 log 的話，前端仍然只看到「BR 清單是空的」，跟修好之前
+        的症狀一模一樣。要讓「沒有 BR」與「BR 寫不進去」不再共用同一個輸出，訊號
+        必須出現在同一個回應裡。
+
+        `report.br_path` 的語意未改變：成功時仍是寫入的檔案路徑字串，失敗時仍是
+        既有的預設 None——本函式不會塞任何新形態的值進去。
+        """
+        try:
+            br_id, br_path = await asyncio.to_thread(
+                self.dispatch_br, url, status_code, html_snippet, failure_reason)
+        except BRDispatchTargetMissing as exc:
+            log.error("診斷 BR 落檔失敗（鏡像驗證結果仍照常回傳）：%s", exc)
+            note = f"（另注意：診斷 BR 無法寫入，BR 落點目錄不存在——{exc}）"
+            report.error_message = f"{report.error_message or ''}{note}"
+            report.dispatched_br = False
+            return
+
+        report.br_id = br_id
+        report.br_path = str(br_path)
+        report.dispatched_br = True
+
     def dispatch_br(self, url: str, status_code: Optional[int], html_snippet: str, failure_reason: str) -> Tuple[str, Path]:
-        """自動生成結構化 Bug Report (BR) 檔案並寫入 repo 之 issues/ 目錄。"""
+        """自動生成結構化 Bug Report (BR) 檔案並寫入 repo 之 issues/ 目錄。
+
+        落點不存在時 raise `BRDispatchTargetMissing`，**不自動建目錄**。
+
+        為什麼寫入當下要再檢一次，而不是靠 `__init__` 的檢查就好：`__init__` 只
+        看得到「建構那一刻」。validator 由 FastAPI 每次請求重新建構（settings_routes
+        的 `get_validator`），但掛載仍可能在建構後、寫入前消失，而且更關鍵的是——
+        `__init__` 的 log 只是「說了」，若這裡照樣寫下去，寫入行為本身仍然是靜默的。
+        兩處都要，因為它們證明的是不同的事：一個是「啟動時契約就已失效」，一個是
+        「這一次寫入確實沒有落到持久位置」。
+
+        已知盲點（明寫，不假裝覆蓋）：本檢查只能分辨「目錄不存在」。若掛載存在但
+        指向錯的 host 路徑、或掛載被換成另一個 ephemeral volume，目錄照樣存在，
+        這裡看不出來——那一格由 tests/test_container_mount_contract.py 的
+        compose↔code 一致性鎖負責，不是本函式的職責。
+        """
         now = datetime.now(timezone.utc)
         date_str = now.strftime("%Y%m%d_%H%M%S")
         clean_domain = re.sub(r"[^a-zA-Z0-9]", "_", url.replace("https://", "").replace("http://", ""))
         br_id = f"BR-{date_str}-{clean_domain}"
         file_path = self.issues_dir / f"{br_id}.md"
+
+        if not self.issues_dir.is_dir():
+            log.error(
+                "BR 落點目錄不存在，放棄寫入 %s。自動建立會讓這份診斷 BR 落進 rebuild"
+                " 即消失的 ephemeral 目錄，而呼叫端會收到一個看起來成功的路徑"
+                " （BR-20260820_223000）。",
+                file_path,
+            )
+            raise BRDispatchTargetMissing(
+                f"BR 落點目錄不存在，拒絕自動建立：{self.issues_dir}。"
+                " 預期它由部署掛載提供（容器內為 docker-compose 的"
+                " `./issues:/app/issues`）。"
+            )
 
         safe_html = html_snippet[:1200].replace("```", "'''")
 
