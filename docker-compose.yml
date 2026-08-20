@@ -13,8 +13,11 @@ services:
     volumes:
       # 程式碼與前端靜態資源即時 Bind Mount（修改即刻生效，完全免 Rebuild）
       - ./app:/app/app
-      # rawdb NAS (192.168.100.40) 永久儲存空間
+      # rawdb NAS (192.168.100.40) 永久儲存空間（書檔本體，體積大、以順序讀寫為主）
       - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/raw:/data/raw
       - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/parsed:/data/parsed
-      - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/db:/data/db
+      # SQLite DB 落本地 ext4（BR-160000）：NFS 上 SQLite 的鎖語意依賴 POSIX advisory
+      # lock，且 timeo=600,hard 會讓單次 read() 阻塞到 60s 而對 SQLite 不可見。
+      # DB 不在 NAS 備份範圍內，由 script/backup-db.sh + cron 每日備份回 NAS。
+      - ./data/db:/data/db
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
