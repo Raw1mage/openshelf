@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 import uuid
@@ -48,7 +49,8 @@ class MirrorValidator:
             if "library.lol" in url or "lol" in url or "gateway" in url:
                 report = await self._test_gateway_mirror(client, url, start_time)
                 if report.validation_status == "incompatible_layout" and auto_dispatch_br:
-                    br_id, br_path = self.dispatch_br(url, report.status_code, "Gateway 結構變更或無效", report.error_message or "")
+                    br_id, br_path = await asyncio.to_thread(
+                        self.dispatch_br, url, report.status_code, "Gateway 結構變更或無效", report.error_message or "")
                     report.br_id = br_id
                     report.br_path = str(br_path)
                     report.dispatched_br = True
@@ -62,7 +64,11 @@ class MirrorValidator:
                 latency_ms = round((time.time() - t0) * 1000, 1)
 
                 if resp.status_code == 200:
-                    records = self.crawler._parse_libgen_li_html(resp.text, url)
+                    # BeautifulSoup 全文解析是 CPU-bound。本方法被 async def 路由
+                    # （settings_routes.py validate_libgen_mirror）await，所以直接呼叫
+                    # 會落在事件迴圈執行緒上，卡住全 process 的請求
+                    # （BR-20260820_210000 D 節；實測單次驗證 max_hb 達 556.7ms）。
+                    records = await asyncio.to_thread(self.crawler._parse_libgen_li_html, resp.text, url)
                     if len(records) > 0 and any(r.get("md5") for r in records):
                         return LibgenMirrorValidationReport(
                             url=url,
@@ -85,7 +91,7 @@ class MirrorValidator:
                 latency_ms = round((time.time() - t0) * 1000, 1)
 
                 if resp.status_code == 200:
-                    records = self.crawler._parse_libgen_is_html(resp.text, url)
+                    records = await asyncio.to_thread(self.crawler._parse_libgen_is_html, resp.text, url)
                     if len(records) > 0 and any(r.get("md5") for r in records):
                         return LibgenMirrorValidationReport(
                             url=url,
@@ -123,7 +129,9 @@ class MirrorValidator:
                     )
 
                     if auto_dispatch_br:
-                        br_id, br_path = self.dispatch_br(url, home_resp.status_code, snippet, error_msg)
+                        # dispatch_br 內含同步 file_path.write_text()（:238）。
+                        br_id, br_path = await asyncio.to_thread(
+                            self.dispatch_br, url, home_resp.status_code, snippet, error_msg)
                         report.br_id = br_id
                         report.br_path = str(br_path)
                         report.dispatched_br = True

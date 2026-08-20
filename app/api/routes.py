@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, Depends
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.storage.manager import StorageManager
@@ -161,7 +162,11 @@ async def upload_book(
     if not contents:
         raise HTTPException(status_code=400, detail="上傳檔案為空")
 
-    work_detail = pipeline.ingest_bytes(
+    # `ingest_bytes` 是同步 def，內含落檔 + PyMuPDF 抽取（CPU-bound）+ 多次 DB 寫。
+    # 本路由是 async def，直接呼叫會把整個 process 的事件迴圈卡住數十秒
+    # （連不進 route 的 404 路徑也一起卡住）——見 BR-20260820_210000 C 節。
+    work_detail = await run_in_threadpool(
+        pipeline.ingest_bytes,
         data=contents,
         filename=file.filename or "unknown.pdf",
         custom_title=custom_title,

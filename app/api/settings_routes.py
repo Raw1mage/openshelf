@@ -1,6 +1,8 @@
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 
 from app.db.dao import CatalogDAO
 from app.db.engine import DatabaseEngine
@@ -54,8 +56,10 @@ async def validate_libgen_mirror(
     """
     report = await validator.validate_mirror(req.url, auto_dispatch_br=req.auto_dispatch_br)
 
-    # 同步回寫至資料庫中的鏡像清單
-    mirrors = dao.get_libgen_mirrors()
+    # 同步回寫至資料庫中的鏡像清單。
+    # 本路由是 async def，兩次 DB 存取直接呼叫會落在事件迴圈執行緒上
+    # （BR-20260820_210000 D 節）。dao.current_iso() 是純計算，不需搬。
+    mirrors = await run_in_threadpool(dao.get_libgen_mirrors)
     target_url = req.url.strip().rstrip("/")
     updated = False
 
@@ -95,7 +99,7 @@ async def validate_libgen_mirror(
         }
         mirrors.append(new_mirror)
 
-    dao.save_libgen_mirrors(mirrors)
+    await run_in_threadpool(dao.save_libgen_mirrors, mirrors)
     return report
 
 
@@ -113,17 +117,36 @@ def list_dispatched_issues():
     if not issues_dir.exists():
         return {"total": 0, "issues": []}
 
-    files = sorted(issues_dir.glob("BR-*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    # 本函式是同步 def（跑在 anyio threadpool，不阻塞事件迴圈），但它佔用的是
+    # 全 app 共用的 40 個 threadpool 名額——BR-20260820_210000 A+B 節的修復已經
+    # 把壓力從 loop 移到這個池子。所以這裡的修法不是再加一次 threadpool hop
+    # （那只是換一個 token，佔用數不變），而是**縮短單次佔用的時間**：
+    #   1. scandir 的 DirEntry 自帶 stat 快取 → 原本每檔 stat 兩次，現在一次
+    #   2. 只要第一行標題，改 readline() → 不再把整份 BR 全文讀進記憶體
+    entries = []
+    with os.scandir(issues_dir) as it:
+        for entry in it:
+            if not entry.name.startswith("BR-") or not entry.name.endswith(".md"):
+                continue
+            if not entry.is_file():
+                continue
+            entries.append((entry.stat().st_mtime, entry.name, entry.path))
+
+    entries.sort(key=lambda t: t[0], reverse=True)
+
     issue_list = []
-    for f in files:
-        content = f.read_text(encoding="utf-8")
-        title_line = content.split("\n")[0] if content else f.name
+    for mtime, name, path in entries:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                title_line = fh.readline()
+        except OSError:
+            title_line = ""
         issue_list.append({
-            "br_id": f.stem,
-            "title": title_line.replace("# ", "").strip(),
-            "file_name": f.name,
-            "updated_at": f.stat().st_mtime,
-            "path": str(f)
+            "br_id": name[:-3],
+            "title": (title_line or name).replace("# ", "").strip(),
+            "file_name": name,
+            "updated_at": mtime,
+            "path": path
         })
 
     return {"total": len(issue_list), "issues": issue_list}
