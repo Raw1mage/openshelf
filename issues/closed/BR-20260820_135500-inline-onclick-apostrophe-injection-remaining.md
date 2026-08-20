@@ -1,6 +1,7 @@
 # BR-20260820_135500 — inline onclick 的撇號截斷仍存在於三處（同款阻斷級缺陷）
 
-Status: OPEN
+Status: CLOSED
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4 (fix af13682)
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: frontend-blocking-io
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4

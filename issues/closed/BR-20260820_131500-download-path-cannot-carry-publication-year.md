@@ -1,6 +1,7 @@
 # BR-20260820_131500 — 下載路徑無法把出版年份從搜尋帶到入庫
 
-Status: OPEN
+Status: CLOSED
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4 (fix 478a9e2)
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: metadata-field-loss
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
