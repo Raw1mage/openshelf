@@ -251,7 +251,120 @@ dispatcher 的禁區清單把 `tests/test_download_worker_enqueue_autostart.py`
 控制組同 grep 對其自身 diff 命中 13（rc=0）。**兩顆 handler 的檔案集切分無誤，
 錯的是 dispatcher 的清單。**
 
-### C/D/E/F 節為何未派
+### C/D/F 已處置（commit `054838c`）；E 節仍未派
+
+handler `ses_fe108fa63ffeZMgdEurLDyvEgB`，dispatcher 獨立驗收。
+
+```
+C  app/api/routes.py src:165   ingest_bytes → run_in_threadpool
+                               app/pipeline/ingest.py 零改動
+D  app/crawler/validator.py    兩處 _parse_libgen_*_html + 兩處 dispatch_br → asyncio.to_thread
+   app/api/settings_routes.py src:59/:102  dao.get/save_libgen_mirrors → run_in_threadpool
+F  app/api/settings_routes.py src:117  glob+stat → os.scandir；read_text → readline
+   enqueue_batch_download / delete_download_job  未修（見下方分岔）
+```
+
+回歸 190 passed rc=0（baseline 185 + 新檔 5 條），rc 獨立取。
+禁區 13 個 pathspec 全 0，控制組三個改過的檔各回 1、不可能的 pathspec 回 0。
+
+#### handler 推翻我三格，全部坐實
+
+**① F 節分岔的選項 2 不是「O(N²) 仍在」而是確定性失效——我的派工單給了一個會壞掉的選項。**
+
+我寫「只在 route 層把整個迴圈包進 threadpool → 移出 loop，但 O(N²) 仍在」。
+dispatcher 獨立重做探針（下載器已 stub，不打公網）：
+
+```
+CONTROL on-loop    _worker_task=CREATED  executed=['job_79f0947ecb72']  status=completed
+SUBJECT in-thread  _worker_task=None     executed=[]                    status 停在 queued
+VERDICT_DIFFERS = True    SUBJECT_JOB_NEVER_RAN = True
+stderr：「無 running event loop，下載背景工作未啟動…將停留在 queued 不會被執行」
+```
+
+機制：`download_worker.py src:262-265` 把三件事綁在 `enqueue` 尾端——
+`_save_jobs_to_disk()`（要移走的同步 I/O）／`queue.put_nowait()`（asyncio.Queue，非執行緒安全）／
+`start()`（`src:159-160` 呼叫 `asyncio.get_running_loop()`）。threadpool 工作執行緒沒有 running loop，
+`start()` 走進 `except RuntimeError` → log.warning → return。
+**包 threadpool 會把 `autostart=True` 偷偷變成 `autostart=False`**，正是 BR-143000 鎖住的那兩態。
+
+**② D 節的主阻塞源不是我列的 DB，是 validator 的解析。**
+
+```
+PRE  （HEAD b04d584）              max_hb = 525.4ms
+POST （只修 route 層 DB 存取）      max_hb = 556.7ms   ← 沒有改善
+POST2（再修 validator 解析+落檔）   max_hb =  47.1ms   ← 真正的修復
+```
+
+與本 BR「處置紀錄 ①」承認的 A 節誤導**完全同型**：我把 `dao.get/save` 列在清單最前面、
+`validator.py` 的 BeautifulSoup 列在最後一行，讀起來像前者是主因。
+**若只修 DB 那兩格，這一節等於沒修，而 route 層的測試會全綠。**
+
+**③ `list_dispatched_issues` 加 threadpool hop 是零收益。** 它已經是 sync def，本來就跑在
+threadpool，包一層只是換一個 token，佔用數不變。正解是縮短單次佔用時間（scandir + readline）。
+
+#### 我推翻 handler 一格：`tp_waiting` 測的是探針批次大小，不是壓力搬家
+
+handler 引用 `tp_waiting=20 @ 60 併發` 當「threadpool 確實排隊了」的證據。
+dispatcher 實測七組 N，`waiting == max(0, N-40)` **全部成立**：
+
+```
+N     10  40  50  60  60  80  120
+work 0.3 0.3 0.3 0.3 0.5 0.3  0.3
+wait   0   0  10  20  20  40   80      ← 全部 == max(0, N-40)
+CONTROL 60 @ 1ms → waiting=12 < 20     ← 證明探針該低於預測時真的會低
+```
+
+**那是算術必然不是量測結果**——它由我丟幾個進去決定，不論修復好壞都一樣。
+「有排隊」與「我丟了 60 個進 40 格」共用同一個輸出。
+
+正確指標是等待**時間**：
+
+```
+CONTROL 10 併發未飽和      p50=  3.0ms  max=  3.9ms   ← 儀器該近零時真的近零
+CONTROL 40 併發剛好滿格    p50=  5.3ms  max= 11.4ms
+60x @467.8ms（PRE 成本）   p95=476.5ms  max=477.0ms
+60x @ 16.5ms（POST 成本）  p95= 25.0ms  max= 25.1ms   ← 19 倍
+```
+
+**壓力沒有搬家成災難，是同向改善**——佔用時間短 28 倍，佇列排空快 19 倍。
+handler 的結論方向對，但它引的數字支撐不了那個結論。
+
+#### F 節待裁決（未修，不是漏修）
+
+`enqueue_batch_download` 的 O(N²) 唯一正確修法是讓 worker 提供批次入列 API（存檔一次），
+那會動 `download_worker.py` = 禁區 + handler I 持有 `[OWNS download-worker-lifecycle]`。
+`delete_download_job` 的 `part_file.unlink()` 同理。**handler 依派工單指示未自行動手。**
+
+現況 N=120 實測 `jobs_file_bytes=57012`、wall≈95ms、loop lag 93.9ms——這個 N 還不痛，但它是 O(N²)。
+
+#### 本節滾出一張新 BR
+
+驗收 F 節時查 `list_dispatched_issues` 回 `total=0` 的原因，發現
+**`dispatch_br` 寫進容器 ephemeral 目錄**（`/app/issues` 未掛載，`validator.py src:24` 的
+`mkdir(exist_ok=True)` 讓缺席態與失敗態共用同一個輸出）。
+→ `BR-20260820_223000-dispatch-br-writes-to-ephemeral-container-dir.md`
+
+#### dispatcher 本輪自己的三個缺陷
+
+1. **commit `054838c` 的訊息有一句不實陳述**：我寫「`/api/settings/libgen-mirrors/issues` 200,
+   total>0 且標題非空」，**實際回的是 `TOTAL=0 ITEMS=0`**，而我自己的控制組已經標了
+   `N/A-empty`。我把一個沒有鑑別力的結果寫成了證據。不 amend，留在歷史裡並在此更正。
+2. **第一版 F 節探針掛住 120s（rc=124）**：控制組那條 `autostart=True` 真的啟動迴圈去打公網
+   做指數退避重試，我沒 stub 下載器。清理後 `REAL_PYTHON_STRAYS=0`
+   （`pgrep` 一度回 2 是匹配到我自己的 bash 命令列，控制組 `ps` 看得到 4 個 python 證明有鑑別力）。
+3. **拿假 404 當證據**：先猜 `/api/settings/dispatched-issues` 回 404 就準備下結論，
+   真實路徑是 `/api/settings/libgen-mirrors/issues`。**本班第二次**（前一次是打錯 port 8000）。
+   改用 `openapi.json` 查真實路由才確定。
+
+#### E 節的行號已漂移（本 BR 內文未更新）
+
+本 BR 上方 E 節寫 `download_worker.py:382-386`，**實際 `f.write(chunk)` 在 `src:512`、
+`process_file` 在 `src:544`**（BR-230000 的修復把檔案撐長了）。派 E 節時以 bytes 為準。
+
+E 節仍未派的原因不變：它的同步 `f.write` 到 NFS 是 BR-160000 的第三個候選機制，
+**現在動它會抹掉觀察期的診斷訊號**，需使用者裁決。
+
+### （原記錄）C/D/E/F 節為何未派
 
 ```
 E 節   動 app/crawler/download_worker.py，與 BR-230000 的檔案集交集非空
