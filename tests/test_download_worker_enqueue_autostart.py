@@ -81,26 +81,21 @@ def _warnings(caplog) -> list:
             if r.name == LOGGER_NAME and r.levelno >= logging.WARNING]
 
 
-async def _hard_cancel(task) -> bool:
-    """反覆取消直到 task 真的結束，回傳是否成功結束。
+async def _shutdown(worker) -> bool:
+    """收掉背景迴圈，回傳是否真的結束。
 
-    ⚠ 為什麼不能只 `task.cancel()` + `await task`：
-    `_process_queue()` 的 `except asyncio.CancelledError:` 會**吞掉**取消並回到
-    迴圈頂端 `await self.queue.get()`，所以當背景迴圈正在跑一個 job 時，單次
-    cancel 不會讓它結束，`await task` 會永遠掛住（實測：pytest 逾時 25s 被砍）。
-    這是既有行為，不在本包變更範圍，此處只是安全收尾。
+    這裡原本是一個反覆 cancel 200 次的 `_hard_cancel` workaround：
+    `_process_queue()` 的 `except asyncio.CancelledError:` 無條件吞掉取消並回到
+    迴圈頂端，所以單次 `task.cancel()` + `await task` 會永遠掛住。
+
+    BR-20260820_230000 修復後，worker 自己有了可呼叫的關閉路徑，
+    繞道就不再需要了——**這個 workaround 能不能拿掉，本身就是修復是否
+    真的生效的檢驗**（判準 4）。包 `wait_for` 是為了讓回歸以斷言失敗而非
+    逾時呈現。
     """
-    if task is None:
+    if worker._worker_task is None:
         return True
-    for _ in range(200):
-        if task.done():
-            return True
-        task.cancel()
-        try:
-            await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            pass
-    return task.done()
+    return await asyncio.wait_for(worker.stop(), timeout=5.0)
 
 
 def _run(worker, scenario):
@@ -108,15 +103,14 @@ def _run(worker, scenario):
 
     ⚠ 沒有這層 finally，**失敗的測試會以逾時而非斷言失敗呈現**：
     斷言拋出後 `asyncio.run()` 進入收尾，去取消殘留的 `_worker_task`，
-    而 `_process_queue()` 吞掉取消後回到迴圈頂端，於是永遠關不掉。
-    逾時（rc=124）與「環境卡住」共用同一個輸出——那正是本 BR 的失效類別，
-    不可以出現在證明它的測試本身。
+    而一個關不掉的迴圈會把那裡變成永久掛住。逾時（rc=124）與「環境卡住」
+    共用同一個輸出，不可以出現在證明它的測試本身。
     """
     async def wrapped():
         try:
             await scenario()
         finally:
-            await _hard_cancel(worker._worker_task)
+            await _shutdown(worker)
 
     asyncio.run(wrapped())
 
@@ -176,7 +170,8 @@ def test_enqueue_default_still_starts_worker(worker):
         assert task is not None, "預設路徑必須建立背景 task（行為零變更）"
         assert isinstance(task, asyncio.Task)
 
-        assert await _hard_cancel(task), "背景 task 必須能被收掉"
+        assert await _shutdown(worker), "背景 task 必須能被收掉"
+        assert task.done(), "收掉之後 task 必須真的結束"
 
     _run(worker, scenario)
 
@@ -188,7 +183,8 @@ def test_enqueue_explicit_true_matches_default(worker):
         task = worker._worker_task
         assert task is not None
 
-        assert await _hard_cancel(task), "背景 task 必須能被收掉"
+        assert await _shutdown(worker), "背景 task 必須能被收掉"
+        assert task.done(), "收掉之後 task 必須真的結束"
 
     _run(worker, scenario)
 
@@ -241,7 +237,7 @@ def test_tripwire_actually_detects_outbound_http(worker, tripwire):
                 break
             await asyncio.sleep(0.01)
 
-        await _hard_cancel(worker._worker_task)
+        await _shutdown(worker)
 
         assert tripwire, \
             "偵測器未在預設路徑上跳——它抓不到網路請求，上一條測試無效"

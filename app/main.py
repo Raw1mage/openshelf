@@ -25,7 +25,13 @@ async def lifespan(app: FastAPI):
     engine.init_database()
     worker = get_worker()
     worker.start()
-    yield
+    try:
+        yield
+    finally:
+        # 沒有這段，`_worker_task` 就沒有任何呼叫端會去收它——uvicorn 優雅關閉
+        # 只能等寬限期到期被 SIGKILL，下載中的 job 沒機會落盤標記狀態
+        # （BR-20260820_230000 證據 ③）。
+        await worker.stop()
 
 app = FastAPI(
     title="openshelf — 繁體中文版 Libgen 與全文聚合系統",

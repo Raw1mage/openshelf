@@ -77,6 +77,11 @@ class DownloadWorker:
         self.queue: asyncio.Queue[DownloadJob] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_tasks: Dict[str, asyncio.Task] = {}
+        # 「關閉整個 worker」與「暫停單一 job」送出的訊號都是 CancelledError，
+        # 語意卻相反（前者要結束迴圈、後者要繼續跑）。沒有這個旗標，兩種取消
+        # 共用同一個輸入而處理端只實作得了其中一種——迴圈就永遠關不掉
+        # （BR-20260820_230000）。
+        self._stopping: bool = False
         self._jobs_file = self.pipeline.storage.db_dir / "download_jobs.json"
         self._load_jobs_from_disk()
 
@@ -161,7 +166,55 @@ class DownloadWorker:
             )
             return
         if self._worker_task is None or self._worker_task.done():
+            # 重新啟動時必須清掉關閉旗標，否則新迴圈會把第一個 pause 取消
+            # 當成 shutdown 而立刻死掉。
+            self._stopping = False
             self._worker_task = loop.create_task(self._process_queue())
+
+    async def stop(self, timeout: float = 5.0) -> bool:
+        """停止背景 Worker 監聽循環，並等它真的結束（BR-20260820_230000）。
+
+        與 `pause_job` / `delete_job` 的取消**必須可區分**：兩者送出的訊號都是
+        `CancelledError`，但語意相反——
+          - pause / delete：取消單一 job 的傳輸，迴圈**繼續**跑
+          - stop：整個 worker 收攤，迴圈**結束**
+        區分靠的是 `self._stopping`：`_process_queue()` / `_run_single_job()` 的
+        `except asyncio.CancelledError` 只在旗標為假時吞掉取消，為真則 re-raise。
+
+        回傳值兩態必須可分：
+          - True  → 所有 task 都真的結束了
+          - False → 逾時仍有 task 存活（此時 log.warning 出聲）
+        否則「關掉了」與「關不掉」會共用同一個輸出——那正是本 BR 的失效類別。
+        """
+        self._stopping = True
+
+        worker_task = self._worker_task
+
+        # 先收 start_job() 建立的單一 job task，再收背景迴圈本身。
+        # 同一個 task 可能同時出現在兩邊——`_process_queue` 執行 job 時會把自己
+        # 塞進 `_active_tasks`。必須去重，每個 task 只取消一次：
+        # 對同一個 task 連續 cancel 兩次，會讓「取消真的穿透了」與「第一次被吞掉、
+        # 第二次剛好打在 queue.get() 上才穿透」共用同一個輸出，把吞取消的缺陷蓋掉。
+        pending: set = set()
+        for task in list(self._active_tasks.values()) + [worker_task]:
+            if task is None or task.done() or task in pending:
+                continue
+            task.cancel()
+            pending.add(task)
+
+        stopped = True
+        if pending:
+            _done, still_running = await asyncio.wait(pending, timeout=timeout)
+            if still_running:
+                stopped = False
+                log.warning(
+                    "下載背景工作在 %.1f 秒內未結束（仍有 %d 個 task 存活），"
+                    "關閉流程未能乾淨收尾。",
+                    timeout, len(still_running),
+                )
+
+        self._save_jobs_to_disk()
+        return stopped
 
     def enqueue(
         self,
@@ -236,6 +289,10 @@ class DownloadWorker:
         try:
             await self._execute_download_with_resume(job)
         except asyncio.CancelledError:
+            # 整個 worker 收攤時取消必須穿透（見 stop() 的說明）。
+            if self._stopping:
+                self._mark_interrupted_by_shutdown(job)
+                raise
             if job.job_id in self.jobs and job.status != "paused":
                 job.status = "paused"
                 job.error_message = "已暫停"
@@ -246,6 +303,21 @@ class DownloadWorker:
         finally:
             self._active_tasks.pop(job.job_id, None)
             self._save_jobs_to_disk()
+
+    def _mark_interrupted_by_shutdown(self, job: DownloadJob):
+        """worker 收攤時，把進行中的 job 落盤成可辨識的中斷態。
+
+        不用 `paused`：那是「使用者按了暫停」的語意，重啟後不會自動繼續。
+        回 `queued` 才能讓 `_load_jobs_from_disk()` 在下次啟動時重新入列（:135）。
+        兩者共用 `paused` 的話，「使用者暫停的」與「被關機掉的」會共用同一個輸出。
+        """
+        if job.job_id not in self.jobs:
+            return
+        if job.status in ("completed", "failed", "paused"):
+            return
+        job.status = "queued"
+        job.error_message = "服務關閉中斷，將於下次啟動自動繼續"
+        job.updated_at = datetime.now(timezone.utc).isoformat()
 
     def pause_job(self, job_id: str) -> Optional[DownloadJob]:
         """暫停正在排隊或下載中的任務。"""
@@ -320,7 +392,7 @@ class DownloadWorker:
 
     async def _process_queue(self):
         """依序取出佇列中的任務執行下載與落地。"""
-        while True:
+        while not self._stopping:
             job = await self.queue.get()
             if job.status == "paused" or job.job_id not in self.jobs:
                 self.queue.task_done()
@@ -332,6 +404,17 @@ class DownloadWorker:
             try:
                 await self._execute_download_with_resume(job)
             except asyncio.CancelledError:
+                # 兩種取消共用這個型別，必須靠 `_stopping` 區分（BR-20260820_230000）：
+                #   - stop() 收攤整個 worker → re-raise，讓取消穿透、結束 while 迴圈
+                #   - pause_job / delete_job 取消單一 job → 吞掉，迴圈繼續跑
+                # 拿掉這個分支（一律吞）迴圈就關不掉；拿掉否定分支（一律穿透）pause 會
+                # 讓整個背景迴圈陪葬。兩個方向都有測試鎖住。
+                # 收尾（pop / 存檔 / task_done）一律留給下面的 finally，這裡只標狀態後
+                # re-raise——在這裡重複做一次會讓 `queue.task_done()` 被呼叫兩次而
+                # 拋 ValueError，把乾淨的關閉變成噪音。
+                if self._stopping:
+                    self._mark_interrupted_by_shutdown(job)
+                    raise
                 # 任務被手動暫停或刪除
                 if job.job_id in self.jobs and job.status != "paused":
                     job.status = "paused"
