@@ -1,9 +1,18 @@
 # BR-20260820_143000 — DownloadWorker.start() 在無 event loop 時靜默 no-op，有 loop 時真的打公網
 
-Status: **PARTIAL** — 主修復已落地並驗收（`d59dd8d`），但**判準 4 仍未關閉**（見下方殘留節）。
-        依本 repo 規約，帶 scoped remainder 的 BR 留頂層，不進 `closed/`。
+Status: **CLOSED** — 判準 1-5 全數達成，無殘留。
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
-Fixed-by: `d59dd8d` — handler ses_fe18eab55ffeEQU8vBGV8DrmVd，值星官獨立驗收（2026-08-20）
+Fixed-by: 兩個 commit，兩顆 handler，值星官均獨立驗收：
+  - `d59dd8d` — 判準 1/2/3/5（兩態可區分 + 雙向測試 + 靜默 except）
+                handler ses_fe18eab55ffeEQU8vBGV8DrmVd
+  - `3119fe4` — 判準 4（`enqueue(autostart=...)` opt-out 參數）
+                handler ses_fe15f2ba4ffenRsWHzMk15DmRs
+
+**衍生 BR**：`BR-20260820_230000-download-worker-loop-cannot-be-stopped`（OPEN，`7057600`）
+—— 同一族、同一檔案，但是相反方向的缺陷：本案是「該啟動而沒啟動時不出聲」，
+那案是「啟動之後關不掉」。**不是本案的殘留**——本案的五條判準全數達成，
+那是獨立的新缺陷，在為判準 4 寫測試時被踩到。
 Family: download-worker-lifecycle
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Reported-by: handler ses_fe27556c4ffeWZLm2DnDItEhNf（修 BR-131500 時撿到，`issues/` 在其禁區故未自行建檔）
@@ -207,8 +216,79 @@ handler 依指示未自行決定。
 `monkeypatch.setattr(worker, "start", lambda: None)`。它擋的是「有 loop 時真的去下載」
 這條路徑——本修復完全沒碰它（本修復只讓「無 loop 時」出聲），**所以它沒有變成多餘**。
 
-### 歸檔條件
+### 歸檔條件（已滿足，2026-08-20）
 
-判準 4 以 A / B / C 任一方式關閉後，本 BR 方可 `git mv` 進 `issues/closed/`。
-在那之前維持 **PARTIAL** 留頂層——**修好一半就歸檔，會讓「已驗證的部分」與
-「未涵蓋的部分」共用同一個狀態**，而那正是本 BR 記載的失效類別本身。
+~~判準 4 以 A / B / C 任一方式關閉後，本 BR 方可 `git mv` 進 `issues/closed/`。~~
+
+**使用者拍板選 A（2026-08-20），已由 `3119fe4` 實作並驗收。**
+
+## 判準 4 的關閉（`3119fe4`，handler ses_fe15f2ba4ffenRsWHzMk15DmRs）
+
+### 實作
+
+`enqueue()` 新增 `autostart: bool = True`（簽名末位）。行為改動只有一處：
+
+```diff
+-        self.start()
++        if autostart:
++            self.start()
+```
+
+預設值選 `True` 是為了讓 production 兩個呼叫點（`crawler_routes.py:118/138`）
+不傳參數即維持**逐字相同**的行為，本包未動那個檔。
+
+docstring 同步更新——原文寫「目前沒有 opt-out 參數」，那句現在是錯的。
+新版另明寫 `autostart=False` **也不會 log.warning**（沒有嘗試啟動，
+就沒有啟動失敗可報）——這格容易被誤實作成「照樣呼叫 `start()`」，
+有專測當探針。
+
+### 測試（`tests/test_download_worker_enqueue_autostart.py`，7 條）
+
+三個方向各自帶控制組——**單一方向不足以鎖住契約**：
+
+```
+只測 False 不啟動      →  「永遠不啟動」的壞實作也會通過
+只測 True 會啟動       →  「忽略參數」（＝修復前原狀）也會通過
+只測「沒偵測到請求」  →  壞掉的偵測器也會通過
+```
+
+`_NetworkTripwire` 攜在 `httpx.AsyncClient` 建構子上，**建構即記錄然後立刻 raise**。
+不回假 client 的理由：若回假 client，「攜截失敗」與「本來就沒人要出去」共用同一個輸出。
+`test_tripwire_actually_detects_outbound_http` 同時是偵測器的控制組與
+「預設路徑確實會出網」的正面證據，也就是本 BR 記載的副作用本身。
+
+### 值星官獨立驗收（未採信 handler 自報）
+
+```
+基線 --ignore 新測試檔        163 passed  rc=0
+  CONTROL --ignore 指向不存在的檔  170 passed   ← 證明 --ignore 真的在濾，非空轉
+完整                          170 passed  rc=0   （163 + 7）
+新檔單跑                        7 passed  rc=0
+
+MUTATION 拿掉 if autostart:（＝參數被忽略）
+  OCCURRENCES_OF_GUARD = 1        ← 腳本內 assert，避免 pattern 沒中仍 exit 0
+  MUTATION_LANDED_rc = 1          ← 突變真的落地
+  guard count 0；CONTROL 簽名仍在 = 1
+  → 3 failed / 4 passed  rc=1
+    test_enqueue_autostart_false_enqueues_but_does_not_start
+    test_enqueue_autostart_false_is_silent
+    test_enqueue_autostart_false_issues_no_outbound_http
+  timeout_rc124 = NO；AssertionError × 6      ← 斷言失敗，不是掛住
+
+還原 diff rc=0；CONTROL diff 對 HEAD rc=1
+guard 回來 = 1；還原後完整 170 passed rc=0
+禁區 14 個路徑全空；CONTROL 同語法對已改檔非空
+production diff 正好 3 個 hunk（簽名 / docstring / if 守衛）
+```
+
+### 這一包最有價值的產出不是修復本身
+
+handler 第一版測試用天真的 `task.cancel()` + `await task` 收尾，**逾時被砍**（rc=124）。
+逐條隔離後定位到 `_process_queue:334` 的 `except CancelledError` 不 re-raise。
+
+真正嚴重的不是第一版寫錯，是**它造成的失效形狀**：斷言失敗後 `asyncio.run()`
+進入收尾去取消殘留的 `_worker_task`，撞上同一個吞取消的 except，於是關不掉——
+**逾時與「環境卡住」共用同一個輸出，而那正是本 BR 的失效類別出現在證明它的測試自己身上**。
+
+已用 `_hard_cancel` + `_run` 的 `finally` 修掉（測試層繞道，並留完整註解），
+並將根本缺陷建檔為 `BR-20260820_230000`。
