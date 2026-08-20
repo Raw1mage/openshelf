@@ -1,6 +1,9 @@
 # BR-20260821_050000 — 搜尋常見英文字確定性耗時 92 秒，且會癱瘓全站
 
-- **Status**: OPEN
+- **Status**: CLOSED — verified & effective
+- **Closed**: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4（dispatcher 獨立重跑六格判準）
+- **Fix**: `a31e9258581bd5fe98141ab66cdc379def4d4347` — snippet 改 `instr`+`substr` 視窗
+- **Result**: 92.143s → 0.095s（**970×**，dispatcher 獨立三次重跑 0.0949/0.0978/0.0976）
 - **Severity**: CRITICAL — 使用者可感知、確定性、單指令即可觸發
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Family**: G-perf-search
@@ -40,7 +43,7 @@ curl -s -o /dev/null -w 'http=%{http_code} t=%{time_total}\n' --max-time 240 \
 
 ---
 
-## 三、機制（`app/db/search.py`，四個因子疊乘）
+## 三、機制（`app/db/search.py`）— **99.99% 集中在單一因子**
 
 全部由 dispatcher 獨立在原始碼確認（控制組：檔案 181 行、負控制組 bogus token = 0，工具有鑑別力）：
 
@@ -57,7 +60,30 @@ curl -s -o /dev/null -w 'http=%{http_code} t=%{time_total}\n' --max-time 240 \
    **每一列都重跑一次 `MATCH`。**
 4. **`src:137-139` 三個 `LEFT JOIN`**（`manifestation` / `file_object` / `reading_state`）+ 外層 `ORDER BY` 無索引欄位。
 
-> ⚠ **未逐條坐實相對占比。** 沒有跑 `EXPLAIN QUERY PLAN`，所以「四個因子各佔多少」是機制推論不是實測。修復前應先跑一次以免優化錯地方。
+### 三之二、實測占比（2026-08-21 補，**推翻本節原本的「四個因子疊乘」寫法**）
+
+原文寫「四個因子疊乘」並標明未坐實占比。拆解後證實**那個框架是錯的**：
+
+```
+A1 FTS MATCH only (work_id list)                  0.016s  -> 14 rows
+A2 count_sql (full COUNT)                         0.009s  -> 14
+A3 select_sql WITHOUT snippet                     0.009s  -> 14
+A4 select_sql WITH snippet (as app)              97.643s  -> 14
+A5 snippet for ONE work_id                        0.005s
+A6 CONTROL q=zzzznomatch (must be fast)           0.001s  ->  0
+```
+
+| 因子 | 編號 | 實測占比 |
+|---|---|---|
+| **snippet 逐列子查詢** | 3 | **99.99%**（97.634s / 97.643s）|
+| count_sql 全表 COUNT | 2 | 0.009s |
+| trigram 全掃 | 1 | 0.016s |
+| 三個 LEFT JOIN + ORDER BY | 4 | 含在 A3 的 0.009s 內 |
+
+`EXPLAIN QUERY PLAN` 指同一格：`CORRELATED SCALAR SUBQUERY 1` 下掛
+`SCAN work_fts VIRTUAL TABLE INDEX 0:M4`。
+
+**⇒ 因子 1、2、4 加起來不到 0.04 秒。針對它們的任何優化都是白費。**
 
 ---
 
@@ -184,16 +210,92 @@ handler 對線上 DB 持有 writer 鎖 12 秒（純 `BEGIN IMMEDIATE` + `ROLLBAC
 
 ---
 
-## 六、修復方向（未定案，需先跑 EXPLAIN QUERY PLAN）
+## 六、修復方向（**已定案並實作，見六之二**）
+
+> ⚠ **下表是本 BR 建檔當下的原始猜測，其中 A 與 B 已被實測證偽。**
+> 保留它是為了讓下一個讀者看到「為什麼那兩條看起來合理卻不會生效」——
+> 直接刪掉的話，下一個人會再想出同一個選項 A。
 
 | 選項 | 動作 | 風險 |
 |---|---|---|
-| A | snippet 改成**只對本頁 20 列**算（先分頁再 snippet，不要在 `SELECT` 裡逐列子查詢） | 低，語意不變 |
-| B | `COUNT(*)` 改成上限估計（`LIMIT 1000` 後回「1000+」）或快取 | 中，改變「總筆數」顯示語意 |
+| ~~A~~ | ~~snippet 改成只對本頁 20 列算~~ **✗ 不會生效，見六之二** | — |
+| ~~B~~ | ~~`COUNT(*)` 改成上限估計~~ **✗ 白費，count 只佔 0.009s** | — |
 | C | 高頻詞的 trigram 查詢加 `rank` 限制 / 改 tokenizer | 高，影響檢索品質 |
 | D | `/api/search` 改 `async def` + `run_in_threadpool` | **不解決慢，只改變排隊位置**；且無助於 GIL |
 
 **D 明確不是解法** —— 它只把排隊從 threadpool 換到別處，92 秒還是 92 秒。
+修復後的實測進一步坐實：**根因消失後 40 併發下 threadpool 完全不飽和（>1s 次數 = 0），
+排隊問題自動消失，不需要動 D。**
+
+### 六之二、⚠ 選項 A 為什麼不會生效（**這格比修法本身更容易失傳**）
+
+**成本與命中列數無關，與文件大小線性相關。** dispatcher 獨立實測：
+
+```
+HIT_ROWS=14   ⇒ N=14 < 20 ⇒「只取本頁 20 列」這個上限根本不會生效
+
+per-doc snippet cost（逐個 work 量，含 content 長度）
+  wk_c58e351110304a00       1131 chars    0.004s
+  wk_46586dcb0be5447f     238747 chars    0.005s
+  wk_189094b2c6f84ad0     328820 chars    0.058s
+  wk_c07ec58fb975496e     311654 chars    0.937s
+  wk_78ec573c5013465f    1953622 chars    4.885s
+  wk_8c6d31cc16734fcd    2177753 chars    5.864s
+  wk_45205a19040640dc    2201780 chars    6.583s
+  wk_59625e5e6086441b    2459854 chars    8.088s
+  wk_9b1556deec6c44f5    2615284 chars    9.503s
+  wk_0e5c93bcf7634d06    2389233 chars    9.801s
+  wk_587aa2ce8bb64e46    2191496 chars    9.833s
+  wk_0389cd70dae24383    2615284 chars   10.441s
+  wk_34e8385cf2334f9c    3873836 chars   17.061s
+  wk_97feae4764f4456c    3873836 chars   19.002s   ← 單一文件就 19 秒
+TOTAL_CHARS=27232330
+DOCS_OVER_1S=10 / 14
+CONTROL_rows_nonempty=True
+```
+
+**決定性佐證**（handler 實測）——把「逐列各一次查詢」換成「單次掃描一併取回」，
+即呼叫次數從 14 降到 1：
+
+```
+PLAN_A_per_row_loop   = 97.3s    （14 次呼叫）
+PLAN_B_single_scan    = 97.262s  （1 次呼叫）
+```
+
+**呼叫次數降 14 倍，時間完全沒變。** 成本不在呼叫次數，在 `snippet()` 每次都要
+重新掃描整份 content 定位 token 偏移。
+
+> **這格對讀者的實際傷害**：照選項 A 實作的人會做完、測不出加速、然後**懷疑自己實作錯了**。
+> 失敗的形狀（做完了、沒變快）不會指向「建議本身錯了」。
+
+### 六之三、實際採用的修法
+
+SQL 端 `instr` + `substr` 取固定視窗。三個候選的實測：
+
+| 方案 | 耗時 | 傳輸量 | 判定 |
+|---|---|---|---|
+| FTS5 `snippet()` | 97.6s | — | 現況 |
+| Python 端全文處理 | 0.230s | **27.2M 字元** | 快，但記憶體風險 |
+| **SQL `instr`+`substr`** | **0.078s** | **840 字元** | **採用** |
+
+**未選 Python 全文版**，即使它也快 424 倍：要把 27.2MB 拉進 process 記憶體，
+`page_size=100` 時達數十 MB，40 併發下是新的癱瘓路徑。
+**修一個效能缺陷時引入另一個，不是可接受的交換。**
+
+改動（`app/db/search.py`，+90/-21）：
+
+1. 抽出 `extract_query_terms()`，與 `build_fts_query()` **共用同一組切詞規則**
+   —— 否則「WHERE 命中的詞」與「被高亮的詞」會不一致，那會讓「這列沒高亮」
+   同時代表兩件不同的事（判準①的形狀）
+2. 移除 SELECT 中的 snippet 相關子查詢
+3. 新增 `_build_snippet_map()`：**分頁之後**只對本頁 work_id 取 `instr`+`substr` 視窗，
+   Python 端 regex 包 `<mark>`
+4. 長詞優先排序，避免 `the` 先被包後破壞 `theory` 的標記
+
+**snippet 語意變更（已裁示接受）**：舊的是 FTS5 token-aware（`'...'` 分隔、20 token），
+新的是字元視窗（前 30 字 + 共 120 字）。**內容不逐字相同，但都含 `<mark>`、都是合理摘要。**
+dispatcher 裁示：snippet 是**摘要**不是**資料**，契約是「讓使用者看到命中脈絡」，
+不是「逐字重現某個特定演算法的輸出」。判準 3/4 刻意只比 `work_id` 集合與 `<mark>` 存在。
 
 ---
 
