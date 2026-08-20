@@ -1,6 +1,10 @@
 # FR-20260820_234500 — 下載佇列中直接指定書籍歸屬的自訂書單
 
-Status: PARTIAL — R1~R4 已實作並驗證（commit 921ac8e），前端 Playwright 18 條亦已獨立重跑通過；殘留為「證據不在版控」與 R5 未做
+Status: **CLOSED** — 驗收主體 R1~R4 + AC1~AC6 全數實作並經 dispatcher 獨立驗收（`921ac8e`）。
+  兩格原殘留已於 2026-08-21 全數銷帳（見文末「殘留銷帳」節）：
+  Playwright 18 條已收進版控（`0a7b1ed`，`tests/e2e/` 4 檔 tracked）；
+  R5 為原文自標的 nice-to-have，其參數鏈後端環已備妥，僅前端不送——**明示不做，非漏做**。
+Closed: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Verified: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Type: Feature Request
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4
@@ -250,7 +254,7 @@ CONTROL 不存在的 pattern                   = 0   rc=1   ← 負控制組
 | 前端指紋 | 新四函式 `ext_hits` 全 0；控制組 `openQuickCollection ext_hits=2` 證明偵測有鑑別力；`node --check` rc=0 |
 | AC6 控制流 | `_apply_collections` 在 `src:750`，`work_id` 指派在 `src:740`；上游 `src:722/725` 任一失敗即 raise |
 
-### 殘留（本 FR 標 PARTIAL 的理由）
+### 殘留（**本節已全數銷帳，見文末「殘留銷帳」；保留原文為紀錄**）
 
 1. **~~前端零瀏覽器實測~~ → 已完成；真正的殘留是「證據不在版控」**
 
@@ -296,6 +300,7 @@ CONTROL 不存在的 pattern                   = 0   rc=1   ← 負控制組
    （phase1 命中 5、phase2 命中 4，負控制組 0 有鑑別力），但結論靠的是我親自重跑。
 2. **R5 未做** —— 原文已標「nice-to-have，R1–R4 才是驗收主體」，
    `DownloadRequestItem.collection_ids` 參數鏈已備妥但前端不送。
+   （**2026-08-21 銷帳：明示不做，非漏做。** 見文末。）
 
 ### dispatcher 自己踩到的一格（記錄，非缺陷）
 
@@ -307,3 +312,72 @@ CONTROL 不存在的 pattern                   = 0   rc=1   ← 負控制組
 容器 log 的載入/存檔失敗訊號皆 0，而控制組 `Application startup complete`=4 rc=0
 證明儀器有鑑別力 —— **系統沒有靜默失效，是我的探針走錯路徑。**
 handler 把這格標成 UNDECIDABLE 而不打扮成缺陷，是對的。
+
+## 殘留銷帳（dispatcher ses_fe7b5cbadffeSlxj0dv1Z740O4，2026-08-21）
+
+上方「殘留」節列的兩格**全部 stale**，已逐格實測銷帳。保留原文不刪，是為了讓讀過舊版的人
+知道發生什麼事——照舊文字做會把已完成的工作重做一次（本 FR 已因同一形狀被更正過一次，
+見殘留第 1 項自身的刪節線）。
+
+### 銷帳 1 — 「證據不在版控」→ 已進版控
+
+原文寫：「證據隨 scratch 蒸發，未來無法回歸」。**該敘述在 `0a7b1ed` 之後不再成立。**
+
+```
+git ls-files tests/e2e/                    →  4 檔（E2E_TRACKED_FILES=4）
+  tests/e2e/conftest.py
+  tests/e2e/test_dispatched_issues_notice.py
+  tests/e2e/test_queue_collection_ui_phase1.py
+  tests/e2e/test_queue_collection_ui_phase2.py
+CONTROL  git ls-files tests/zzz_not_exist/ →  0     ← 證明該指令對不存在的路徑真的回 0
+```
+
+收錄形態（handler `ses_fdff1782c`，dispatcher 驗收 `0a7b1ed`）：**零全域配置**——
+無 `pytest.ini` / 無根 `conftest.py` / 無 marker 註冊，靠目錄內 `tests/e2e/conftest.py`
+的 `pytest_collection_modifyitems` 在**收集階段**標 skip。預設 `pytest tests/` 顯示
+`19 skipped`（存在證明），`OPENSHELF_E2E=1` 才真的跑。
+
+**三態設計（handler 推翻 dispatcher 原驗收條件的產物，已採納）**：
+
+| 狀態 | 結果 | 理由 |
+|---|---|---|
+| 未設 `OPENSHELF_E2E=1` | **skip** | 「你沒要求」是誠實的 skip，不主張任何關於系統的事實 |
+| 設了但環境壞（缺 playwright / chromium / 8088 不可達） | **FAIL loud** | 「我試了但連不上」主張了卻沒證據，不能給綠燈 |
+| 設了且環境齊全 | 真的跑 | — |
+
+dispatcher 原本要求「服務不可達就 skip」，那會讓**「服務掛了」與「測試通過了」共用一個綠燈**
+——判準①長在驗收條件本身。已改。
+
+### 銷帳 2 — 「R5 未做」→ 明示不做，非漏做
+
+R5 在需求原文即自標 **「（可選，次要）… nice-to-have，R1–R4 才是本 FR 的驗收主體」**。
+它不在 AC1~AC6 任何一條裡。而其後端環**已經備妥**：
+
+```
+app/api/crawler_routes.py
+  class DownloadRequestItem:
+      collection_ids: Optional[List[str]] = None      ← 已存在
+      # 原始註解：「目前前端不送這個欄位（使用者的指定動作發生在佇列，
+      #   走 /jobs/{id}/collections），但參數鏈上不能只有這一環缺它
+      #   ——否則將來補要再動一次同樣的檔。」
+  class BatchDownloadRequest:
+      items: List[DownloadRequestItem]                ← 批次層未帶（單筆層已帶）
+CONTROL  該檔 collection_ids 總命中 = 9；bogus pattern = 0   ← 證明計數有鑑別力
+```
+
+**所以缺的只有前端「搜尋結果頁下載時預先指定」的 UI。** 使用者原話定義的驗收下限是
+「佇列中必須給我加入書單的機會」——那條**已經滿足**（R1 已實作並經真瀏覽器實測）。
+R5 是在**更早的時機**多給一次機會，屬體驗優化，不是本 FR 的存在理由。
+
+**判定：不做。** 若日後要做，範圍是 `app/static/js/app.js` 的下載按鈕 +
+`BatchDownloadRequest` 加一個 `collection_ids`，另開 FR，不要重開本張。
+
+### 為何本 FR 現在是 CLOSED 而非 PARTIAL
+
+PARTIAL 的定義是「主修復已 landed 但有**明確的、被承認的**殘留」。本 FR 兩格殘留：
+一格已實際完成（版控），一格是原文即明示的範圍外（R5）。**兩者都不是欠債。**
+
+留在頂層只會讓下一個接手者以為還有工作要做——而那正是本張 FR 已經發生過一次的傷害
+（dispatcher 依 stale 資訊向使用者提了一個「派回原 handler 補前端實測」的選項，
+而那件事早已完成）。
+
