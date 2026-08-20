@@ -106,3 +106,95 @@ Reported-by: 使用者（「把條件縮減到一個單字就能找到書了，�
 **與 `app/static/js/app.js` 的兩張前端 BR 無檔案交集**（本案在 `app/db/` 與 API 層），
 可與前端工作包並行派工。但**不得與 `handler ses_fe29bb665ffeDEhHsHdW0rFuSi` 並行**——
 該 handler 正在寫 `app/db/dao.py`。需等它交件並 commit 後再派。
+
+---
+
+# 根因已定位（2026-08-20 追加，值星官 ses_fe7b5cbadffeSlxj0dv1Z740O4）
+
+## 缺陷 A — 整串查詢被包成單一 FTS5 phrase
+
+`app/db/search.py:34`：
+
+```python
+escaped_q = f'"{cleaned_query}"'      # ← 整串使用者輸入外面套一對引號
+params.append(escaped_q)
+```
+
+`app/db/search.py:96` 的 snippet 子查詢用同一個表達式，所以同時中招。
+
+FTS5 的 `"..."` 是 **phrase 運算子**：它要求引號內的 token 序列**連續且順序一致**地出現。
+於是使用者輸入的每一個字元（含標點、含詞序）都變成必須逐字命中的條件。
+
+**決定性控制組**（記憶體內 FTS5 表，`tokenize='trigram'`，單列
+`'Operating System Concepts with Java 8th Edition'`，排除線上資料變因）：
+
+| MATCH 表達式 | 命中 |
+|---|---|
+| `"Operating System Concept"` | **1** |
+| `"Operating System Concept."` | **0** ← 只多一個句點 |
+| `"Concept Operating"` | **0** ← **只顛倒詞序，無任何標點** |
+| `Operating System Concept`（不包引號） | **1** |
+| `"Operating" "Concept"` | **1** ← 拆成多個 phrase |
+| `Operating AND Concept` | **1** |
+| `"Operating System Concept,Wiley"` | **0** |
+| CONTROL `SELECT count(*)` | **1**（表真的有資料） |
+| CONTROL `"Operating"` | **1**（MATCH 管道是通的） |
+
+**`"Concept Operating"` → 0 是判準關鍵**：它沒有任何標點，只是詞序不同。
+所以 BR 原本寫的「標點導致失敗」只是症狀的一半——**根因是 phrase 語意，標點只是最容易觸發它的形式**。
+
+## 缺陷 B — `publisher` 不在 FTS 索引內
+
+`app/db/schema.sql:107-113`：
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS work_fts USING fts5(
+    work_id UNINDEXED,
+    title,
+    authors_display,
+    content,
+    tokenize='trigram'
+);
+```
+
+`work` 表**有** `publisher` 欄（schema.sql 內 grep rc=0），但它**沒有進 FTS 索引**。
+所以使用者查 `Wiley` 這類出版社名時，本地檢索在定義上**不可能命中**——
+與「這本書不存在」回同一個 `items: []`。
+
+這解釋了為何 `Operating System Concept,Wiley` 就算修好缺陷 A 也仍可能是 0：
+兩個獨立缺陷疊在同一個查詢上。
+
+## 實打對照（容器 API，修復前）
+
+```
+Operating System Concept        local=7
+Operating System Concept.       local=0
+Operating System Concept,Wiley  local=0
+Concept Operating               local=0     ← 無標點，僅詞序
+```
+
+## 修復方向（不是指定實作，是劃出必須成立的性質）
+
+1. **不得**把使用者輸入整串包成 phrase。需要一個查詢建構層，把輸入轉成 FTS5 安全的表達式。
+2. **必須處理 FTS5 語法字元**（`"` `*` `(` `)` `:` `^` `-` `AND` `OR` `NOT` `NEAR`）——
+   使用者打 `C++` 或 `"quoted"` 不得讓查詢炸掉或靜默回 0。
+3. **標點應被視為分隔符而非查詢條件**：`Operating System Concept,Wiley.` 應等價於
+   `Operating System Concept Wiley` 這組詞。
+4. **多詞語意需明確擇一並寫進註解**：AND（全中）還是 OR（任一）？
+   若選 AND，`Wiley` 未索引會讓整串歸零——這與缺陷 B 交互，必須一起想。
+5. **缺陷 B 的處置需要裁示**：把 `publisher` 加進 `work_fts` 要重建虛擬表 +
+   回填既有資料（動 `app/db/schema.sql` 與遷移）。**這格範圍較大，不預設要做。**
+
+## 驗收判準
+
+1. 上方控制組表的**每一列**都要有對應測試，含 `"Concept Operating"` 這種純詞序案例。
+2. **負向必測**：真的不存在的書（如 `zzzzz_no_such_book_qqq`）仍須回 0。
+   缺這格就無法證明修復不是「把所有查詢都變成命中」。
+3. **語法字元不得使查詢失敗**：`C++`、`"`、`(`、`*`、`AND` 單獨輸入皆須回應而非拋例外。
+4. 端到端實打容器 API，給出修前修後對照表（至少涵蓋上方四條實打字串）。
+5. 既有 7 筆命中的查詢（`Operating System Concept`）修復後**不得減少**。
+
+## 已知驗證陷阱
+
+`data/db/openshelf.sqlite`（repo 內，root:root，`work` 表 0 rows）**不是線上那顆**。
+線上是 NAS 掛載 `/nas/openshelf/db`（35 筆）。端到端一律打容器 API。
