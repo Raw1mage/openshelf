@@ -1,6 +1,7 @@
 # BR-20260820_130500 — 出版年份在兩層各自被靜默丟棄
 
-Status: OPEN
+Status: CLOSED — fixed and committed in `823905b`
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: metadata-field-loss
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
