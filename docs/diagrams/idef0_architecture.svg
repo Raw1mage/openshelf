@@ -1,0 +1,61 @@
+<svg width="1660" height="758" viewBox="-299.7 -171.8 1659.4 757.6" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="black" /></marker>
+<marker id="call_arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 M 0 2 L 6 5 L 0 8" fill="none" stroke="black" stroke-width="1" /></marker>
+</defs>
+<rect x="-299.7" y="-171.8" width="1659.4" height="757.6" fill="white" />
+<rect x="130.0" y="120.0" width="200.0" height="120.0" stroke="black" fill="white" stroke-width="1.5" data-id="A1" />
+<text x="230.0" y="163.5" text-anchor="middle" font-size="19" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A1" >A1</text>
+<text x="230.0" y="200.6" text-anchor="middle" font-size="21" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A1" >來源管理與鏡像預檢</text>
+<rect x="410.0" y="120.0" width="200.0" height="120.0" stroke="black" fill="white" stroke-width="1.5" data-id="A2" />
+<text x="510.0" y="161.9" text-anchor="middle" font-size="22" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A2" >A2</text>
+<text x="510.0" y="203.4" text-anchor="middle" font-size="24" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A2" >分散式多鏡像檢索</text>
+<rect x="730.0" y="120.0" width="200.0" height="120.0" stroke="black" fill="white" stroke-width="1.5" data-id="A3" />
+<text x="830.0" y="161.9" text-anchor="middle" font-size="22" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A3" >A3</text>
+<text x="830.0" y="203.4" text-anchor="middle" font-size="24" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A3" >非同步下載與校驗</text>
+<rect x="130.0" y="380.0" width="200.0" height="120.0" stroke="black" fill="white" stroke-width="1.5" data-id="A4" />
+<text x="230.0" y="423.5" text-anchor="middle" font-size="19" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A4" >A4</text>
+<text x="230.0" y="460.6" text-anchor="middle" font-size="21" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A4" >內容抽取與全文索引</text>
+<rect x="410.0" y="380.0" width="200.0" height="120.0" stroke="black" fill="white" stroke-width="1.5" data-id="A5" />
+<text x="510.0" y="423.5" text-anchor="middle" font-size="19" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A5" >A5</text>
+<text x="510.0" y="460.6" text-anchor="middle" font-size="21" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A5" >聚合閱讀與可攜書單</text>
+<rect x="40.0" y="38.2" width="980.0" height="537.6" stroke="black" fill="none" stroke-width="2" />
+<rect x="344.5" y="-161.8" width="371.0" height="110.0" stroke="black" fill="white" stroke-width="1.5" data-id="A0" />
+<text x="530.0" y="-120.8" text-anchor="middle" font-size="14" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A0" >A0</text>
+<text x="530.0" y="-90.8" text-anchor="middle" font-size="16" font-weight="bold" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-id="A0" >OPENSHELF 智慧書庫與聚合閱讀系統架構 (A0)</text>
+<line x1="344.5" y1="-161.8" x2="40.0" y2="38.2" stroke="red" stroke-dasharray="5,5" stroke-width="1.0" opacity="0.6" />
+<line x1="715.5" y1="-161.8" x2="1020.0" y2="38.2" stroke="red" stroke-dasharray="5,5" stroke-width="1.0" opacity="0.6" />
+<line x1="344.5" y1="-51.8" x2="40.0" y2="575.8" stroke="red" stroke-dasharray="5,5" stroke-width="1.0" opacity="0.6" />
+<line x1="715.5" y1="-51.8" x2="1020.0" y2="575.8" stroke="red" stroke-dasharray="5,5" stroke-width="1.0" opacity="0.6" />
+<path d="M 930.0 180.0 L 960.0 180.0 Q 970.0 180.0 970.0 190.0 L 970.0 280.0 Q 970.0 290.0 960.0 290.0 L 100.0 290.0 Q 90.0 290.0 90.0 300.0 L 90.0 430.0 Q 90.0 440.0 100.0 440.0 L 130.0 440.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_7" data-waypoints="930.0,180.0 970.0,180.0 970.0,290.0 90.0,290.0 90.0,440.0 130.0,440.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 610.0 420.0 L 680.0 420.0 Q 690.0 420.0 690.0 410.0 L 690.0 190.0 Q 690.0 180.0 700.0 180.0 L 730.0 180.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_5" data-waypoints="610.0,420.0 690.0,420.0 690.0,180.0 730.0,180.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 610.0 180.0 L 640.0 180.0 Q 650.0 180.0 650.0 190.0 L 650.0 320.0 Q 650.0 330.0 640.0 330.0 L 380.0 330.0 Q 370.0 330.0 370.0 340.0 L 370.0 430.0 Q 370.0 440.0 380.0 440.0 L 410.0 440.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_4" data-waypoints="610.0,180.0 650.0,180.0 650.0,330.0 370.0,330.0 370.0,440.0 410.0,440.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 230.0 84.2 L 230.0 120.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_1" data-waypoints="230.0,84.2 230.0,120.0" marker-end="url(#arrow)" fill="none" />
+<path d="M -10.0 78.2 L 360.0 78.2 Q 370.0 78.2 370.0 88.2 L 370.0 170.0 Q 370.0 180.0 380.0 180.0 L 410.0 180.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_2" data-waypoints="-10.0,78.2 370.0,78.2 370.0,180.0 410.0,180.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 510.0 84.2 L 510.0 120.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_3" data-waypoints="510.0,84.2 510.0,120.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 830.0 84.2 L 830.0 120.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_6" data-waypoints="830.0,84.2 830.0,120.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 510.0 344.2 L 510.0 380.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_8" data-waypoints="510.0,344.2 510.0,380.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 230.0 275.8 L 230.0 240.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_9" data-waypoints="230.0,275.8 230.0,240.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 510.0 275.8 L 510.0 240.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_10" data-waypoints="510.0,275.8 510.0,240.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 830.0 275.8 L 830.0 240.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_11" data-waypoints="830.0,275.8 830.0,240.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 230.0 535.8 L 230.0 500.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_12" data-waypoints="230.0,535.8 230.0,500.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 510.0 535.8 L 510.0 500.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_13" data-waypoints="510.0,535.8 510.0,500.0" marker-end="url(#arrow)" fill="none" />
+<path d="M 610.0 460.0 L 1070.0 460.0" stroke="black" stroke-width="1.2" data-arrow-id="arrow_14" data-waypoints="610.0,460.0 1070.0,460.0" marker-end="url(#arrow)" fill="none" />
+<text x="224.0" y="114.0" font-size="14" text-anchor="end" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_1">自訂鏡像URL</text>
+<text x="236.0" y="114.0" font-size="14" text-anchor="start" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_1">設定</text>
+<text x="510.0" y="78.2" font-size="14" text-anchor="middle" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_3">通過預檢之鏡像池</text>
+<text x="830.0" y="78.2" font-size="14" text-anchor="middle" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_6">可用直鏈Gateway</text>
+<text x="504.0" y="374.0" font-size="14" text-anchor="end" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_8">FTS5全文索引</text>
+<text x="516.0" y="374.0" font-size="14" text-anchor="start" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_8">FRBR目錄</text>
+<text x="224.0" y="256.0" font-size="14" text-anchor="end" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_9">MirrorValidator</text>
+<text x="236.0" y="256.0" font-size="14" text-anchor="start" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_9">BR引擎</text>
+<text x="506.0" y="256.0" font-size="14" text-anchor="end" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_10">LibgenCrawler</text>
+<text x="826.0" y="256.0" font-size="14" text-anchor="end" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_11">DownloadWorker</text>
+<text x="230.0" y="551.8" font-size="14" text-anchor="middle" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_12">IngestionPipeline / PyMuPDF</text>
+<text x="510.0" y="551.8" font-size="14" text-anchor="middle" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_13">WebReader / Local-First Collections</text>
+<text x="510.0" y="308.0" font-size="14" font-weight="bold" fill="black" text-anchor="middle" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_7" >本地原檔 (PDF/EPUB/MOBI)</text>
+<text x="720.0" y="403.0" font-size="14" font-weight="bold" fill="black" text-anchor="start" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_5" >收書下載指令</text>
+<text x="340.0" y="348.0" font-size="14" font-weight="bold" fill="black" text-anchor="end" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_4" >聚合搜尋結果</text>
+<text x="-14.0" y="82.2" font-size="20" text-anchor="end" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_2">關鍵字/ISBN檢索字串</text>
+<text x="1074.0" y="464.0" font-size="20" text-anchor="start" font-weight="bold" fill="black" font-family="'Times New Roman', 'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', serif" data-arrow-id="arrow_14">沉浸式閱覽 / Netscape書籤</text>
+</svg>

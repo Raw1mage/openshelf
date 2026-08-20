@@ -56,5 +56,16 @@
 - [x] 10.2 API 路由層：實作 `/api/categories/tree` 與 `/api/categories/{id}/works` 分類導航與架位書籍檢索端點 — artifact: app/api/category_routes.py, app/main.py
 - [x] 10.3 前端 UI 層：頁首新增「逛書攤」純圖示按鈕（`🏪`），實作左側多階層可折疊樹狀書目導航面板與右側沉浸式書架展示區 — artifact: app/static/index.html, app/static/js/app.js, app/static/css/style.css
 
+## 11. 線上書攤漸進式雲端探索與混合書架 (On-Demand Category Cloud Discovery & Hybrid Shelf)
+
+- [x] 11.1 後端動態探測：在 `category_routes.py` 與 `dao.py` 實作「有觸及再展開」之領域關鍵字雲端探測與快取機制，架位藏書不足時自動向 Libgen 請求精選推薦並落地快取 — artifact: app/api/category_routes.py, app/db/dao.py, app/crawler/search.py
+- [x] 11.2 混合書架 UI：線上書攤書架同時展示 `💾 本地已收錄`（點擊 `📖` 直讀）與 `🌐 雲端精選`（點擊 `📥` 一鍵鏡像落地），並提供來源切換篩選 — artifact: app/static/js/app.js, app/static/index.html
+
+## 12. 手機行動端 RWD 全版獨立頁深度重構 (Mobile-First Full-Screen Single Pages & Back Buttons)
+
+- [x] 12.1 CSS 行動端全面重構：在 `style.css` 建立完整 `@media (max-width: 768px)` 樣式，所有 Modal 浮窗改為 100vw × 100dvh 全螢幕獨立頁面，去除巢狀邊框與多重滾動條 — artifact: app/static/css/style.css
+- [x] 12.2 獨立頁導航與返回按鈕：在所有 Modal 標頭左側加入「⬅️ 返回上一頁」按鈕，書攤與書單在手機端實作「兩階段下鑽（分類列表 ➔ 架位書籍）」無縫切換 — artifact: app/static/index.html, app/static/js/app.js
+- [x] 12.3 窄螢幕防爆框與排版最佳化：優化手機頂部 Header 圖示佈局、搜尋過濾標籤列支援橫向滑動（touch scroll）、書籍卡片在手機端直向流暢堆疊 — artifact: app/static/css/style.css, app/static/index.html
+
 
 

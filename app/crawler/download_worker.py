@@ -64,7 +64,7 @@ class DownloadWorker:
 
     def __init__(self, pipeline: IngestionPipeline = None, resolver: MirrorResolver = None):
         self.pipeline = pipeline or IngestionPipeline()
-        self.resolver = resolver or MirrorResolver()
+        self.resolver = resolver or MirrorResolver(dao=self.pipeline.dao if hasattr(self.pipeline, "dao") else None)
         self.jobs: Dict[str, DownloadJob] = {}
         self.queue: asyncio.Queue[DownloadJob] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None

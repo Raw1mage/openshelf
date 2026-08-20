@@ -20,6 +20,35 @@ let selectedMd5s = new Set();
 let queuePollInterval = null;
 let cachedJobsByMd5 = new Map();
 
+// 全域 Modal / 獨立頁切換管理器（支援頂部導航列直接無縫切換、互斥關閉與高亮）
+function closeAllModals() {
+  const allModalIds = ["queueModal", "uploadModal", "detailModal", "settingsModal", "collectionsModal", "quickCollectionModal", "bookstallModal"];
+  allModalIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove("active", "in-detail-view", "in-shelf-view");
+  });
+  document.querySelectorAll(".header-actions .btn").forEach(b => b.classList.remove("active-nav"));
+}
+
+function toggleModal(modalId, openCallback, navBtnId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  const isAlreadyActive = modal.classList.contains("active");
+
+  // 1. 關閉所有現有開啟之 Modal
+  closeAllModals();
+
+  // 2. 若先前未開啟，則開啟目標 Modal 並啟動對應回呼與高亮
+  if (!isAlreadyActive) {
+    if (openCallback) openCallback();
+    modal.classList.add("active");
+    if (navBtnId) {
+      const navBtn = document.getElementById(navBtnId);
+      if (navBtn) navBtn.classList.add("active-nav");
+    }
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initEventListeners();
   startQueuePolling();
@@ -86,25 +115,34 @@ function initEventListeners() {
   // 批次下載按鈕
   document.getElementById("batchDownloadBtn").addEventListener("click", triggerBatchDownload);
 
-  // 下載佇列 Modal 事件（展開、關閉、縮小在背景運作）
-  const queueModal = document.getElementById("queueModal");
-  const openQueueBtn = document.getElementById("openQueueBtn");
-  const minimizeQueueBtn = document.getElementById("minimizeQueueBtn");
-
-  openQueueBtn.addEventListener("click", () => {
-    queueModal.classList.add("active");
-    refreshQueueModal();
-  });
-  if (minimizeQueueBtn) {
-    minimizeQueueBtn.addEventListener("click", () => queueModal.classList.remove("active"));
+  // 點選 Logo 回到首頁並關閉所有 Modal
+  const logoContainer = document.querySelector(".logo-container");
+  if (logoContainer) {
+    logoContainer.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeAllModals();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
   }
 
-  // 點選 modal 以外任何地方自動縮小
+  // 下載佇列 Modal 事件（展開、關閉、縮小在背景運作）
+  const openQueueBtn = document.getElementById("openQueueBtn");
+  const minimizeQueueBtn = document.getElementById("minimizeQueueBtn");
+  if (openQueueBtn) {
+    openQueueBtn.addEventListener("click", () => toggleModal("queueModal", refreshQueueModal, "openQueueBtn"));
+  }
+  if (minimizeQueueBtn) {
+    minimizeQueueBtn.addEventListener("click", closeAllModals);
+  }
+
+  // 點選 modal 以外任何地方自動縮小（僅桌面端有效）
   document.addEventListener("mousedown", (e) => {
-    if (!queueModal.classList.contains("active")) return;
+    if (window.innerWidth <= 768) return;
+    const queueModal = document.getElementById("queueModal");
+    if (!queueModal || !queueModal.classList.contains("active")) return;
     const card = document.getElementById("queueModalCard");
-    if (card && !card.contains(e.target) && !openQueueBtn.contains(e.target)) {
-      queueModal.classList.remove("active");
+    if (card && !card.contains(e.target) && openQueueBtn && !openQueueBtn.contains(e.target)) {
+      closeAllModals();
     }
   });
 
@@ -126,25 +164,20 @@ function initEventListeners() {
   }
 
   // 手動上傳 Modal
-  const uploadModal = document.getElementById("uploadModal");
   const openUploadBtn = document.getElementById("openUploadBtn");
   const closeUploadBtn = document.getElementById("closeUploadBtn");
   const uploadForm = document.getElementById("uploadForm");
   const fileInput = document.getElementById("fileInput");
   const dropZone = document.getElementById("dropZone");
 
-  openUploadBtn.addEventListener("click", () => uploadModal.classList.add("active"));
-  closeUploadBtn.addEventListener("click", () => uploadModal.classList.remove("active"));
+  if (openUploadBtn) openUploadBtn.addEventListener("click", () => toggleModal("uploadModal", null, "openUploadBtn"));
+  if (closeUploadBtn) closeUploadBtn.addEventListener("click", closeAllModals);
 
   // 系統設定 Modal 事件
-  const settingsModal = document.getElementById("settingsModal");
   const openSettingsBtn = document.getElementById("openSettingsBtn");
   const closeSettingsBtn = document.getElementById("closeSettingsBtn");
-  if (openSettingsBtn) openSettingsBtn.addEventListener("click", () => {
-    initSettingsModal();
-    settingsModal.classList.add("active");
-  });
-  if (closeSettingsBtn) closeSettingsBtn.addEventListener("click", () => settingsModal.classList.remove("active"));
+  if (openSettingsBtn) openSettingsBtn.addEventListener("click", () => toggleModal("settingsModal", initSettingsModal, "openSettingsBtn"));
+  if (closeSettingsBtn) closeSettingsBtn.addEventListener("click", closeAllModals);
 
   // 本機下載偏好勾選
   const autoDownloadLocalCheckbox = document.getElementById("autoDownloadLocalCheckbox");
@@ -161,13 +194,42 @@ function initEventListeners() {
     selectLocalDirBtn.addEventListener("click", handleSelectLocalDirectory);
   }
 
+  // 自訂 Libgen 來源與預檢驗證按鈕
+  const addMirrorBtn = document.getElementById("addMirrorBtn");
+  const validateAllMirrorsBtn = document.getElementById("validateAllMirrorsBtn");
+  const resetMirrorsBtn = document.getElementById("resetMirrorsBtn");
+  if (addMirrorBtn) addMirrorBtn.addEventListener("click", handleAddCustomMirror);
+  if (validateAllMirrorsBtn) validateAllMirrorsBtn.addEventListener("click", handleValidateAllMirrors);
+  if (resetMirrorsBtn) resetMirrorsBtn.addEventListener("click", handleResetMirrors);
+
   // 個人書單 Modal 事件
   const openCollectionsBtn = document.getElementById("openCollectionsBtn");
   const closeCollectionsBtn = document.getElementById("closeCollectionsBtn");
   const newCollectionBtn = document.getElementById("newCollectionBtn");
-  if (openCollectionsBtn) openCollectionsBtn.addEventListener("click", () => openCollectionsModal());
-  if (closeCollectionsBtn) closeCollectionsBtn.addEventListener("click", closeCollectionsModal);
-  if (newCollectionBtn) newCollectionBtn.addEventListener("click", createNewCollectionPrompt);
+  const exportCollectionsBtn = document.getElementById("exportCollectionsBtn");
+  const importCollectionsBtn = document.getElementById("importCollectionsBtn");
+  const bookmarkFileInput = document.getElementById("bookmarkFileInput");
+  const settingsExportHtmlBtn = document.getElementById("settingsExportHtmlBtn");
+  const settingsExportJsonBtn = document.getElementById("settingsExportJsonBtn");
+  const settingsImportBtn = document.getElementById("settingsImportBtn");
+
+  if (openCollectionsBtn) openCollectionsBtn.addEventListener("click", () => toggleModal("collectionsModal", openCollectionsModal, "openCollectionsBtn"));
+  if (closeCollectionsBtn) closeCollectionsBtn.addEventListener("click", closeAllModals);
+  if (newCollectionBtn) newCollectionBtn.addEventListener("click", (e) => createNewCollectionPrompt(e.currentTarget));
+  if (exportCollectionsBtn) exportCollectionsBtn.addEventListener("click", (e) => exportCollectionsAsNetscapeHtml(e.currentTarget));
+  if (importCollectionsBtn) importCollectionsBtn.addEventListener("click", () => bookmarkFileInput && bookmarkFileInput.click());
+  if (settingsExportHtmlBtn) settingsExportHtmlBtn.addEventListener("click", (e) => exportCollectionsAsNetscapeHtml(e.currentTarget));
+  if (settingsExportJsonBtn) settingsExportJsonBtn.addEventListener("click", (e) => exportCollectionsAsJson(e.currentTarget));
+  if (settingsImportBtn) settingsImportBtn.addEventListener("click", () => bookmarkFileInput && bookmarkFileInput.click());
+
+  if (bookmarkFileInput) {
+    bookmarkFileInput.addEventListener("change", async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        await handleImportBookmarkFile(e.target.files[0], importCollectionsBtn);
+        e.target.value = "";
+      }
+    });
+  }
 
   // 快速收藏 Modal 事件
   const closeQuickCollectionBtn = document.getElementById("closeQuickCollectionBtn");
@@ -178,8 +240,38 @@ function initEventListeners() {
   // 逛線上書攤 Modal 事件
   const openBookstallBtn = document.getElementById("openBookstallBtn");
   const closeBookstallBtn = document.getElementById("closeBookstallBtn");
-  if (openBookstallBtn) openBookstallBtn.addEventListener("click", openBookstallModal);
-  if (closeBookstallBtn) closeBookstallBtn.addEventListener("click", closeBookstallModal);
+  if (openBookstallBtn) openBookstallBtn.addEventListener("click", () => toggleModal("bookstallModal", openBookstallModal, "openBookstallBtn"));
+  if (closeBookstallBtn) closeBookstallBtn.addEventListener("click", closeAllModals);
+
+  // 手機端全版獨立頁返回按鈕 (Mobile Back Buttons)
+  const bindMobileBack = (btnId, handler) => {
+    const btn = document.getElementById(btnId);
+    if (btn) btn.addEventListener("click", handler);
+  };
+  bindMobileBack("queueMobileBackBtn", closeAllModals);
+  bindMobileBack("uploadMobileBackBtn", closeAllModals);
+  bindMobileBack("detailMobileBackBtn", () => document.getElementById("detailModal").classList.remove("active"));
+  bindMobileBack("settingsMobileBackBtn", closeAllModals);
+  bindMobileBack("quickMobileBackBtn", () => document.getElementById("quickCollectionModal").classList.remove("active"));
+  bindMobileBack("collectionsMobileBackBtn", () => {
+    const colModal = document.getElementById("collectionsModal");
+    if (colModal.classList.contains("in-detail-view")) {
+      colModal.classList.remove("in-detail-view");
+    } else {
+      closeAllModals();
+    }
+  });
+  bindMobileBack("bookstallMobileBackBtn", () => {
+    const bModal = document.getElementById("bookstallModal");
+    if (bModal.classList.contains("in-shelf-view")) {
+      bModal.classList.remove("in-shelf-view");
+    } else {
+      closeAllModals();
+    }
+  });
+  bindMobileBack("bookstallBackToTreeBtn", () => {
+    document.getElementById("bookstallModal").classList.remove("in-shelf-view");
+  });
 
   dropZone.addEventListener("click", () => fileInput.click());
   dropZone.addEventListener("dragover", (e) => {
@@ -205,7 +297,13 @@ function initEventListeners() {
   uploadForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!fileInput.files.length) {
-      alert("請先選擇要上傳的 PDF 或 EPUB 檔案！");
+      showCustomAlert({
+        title: "提示",
+        message: "請先選擇要上傳的 PDF 或 EPUB 檔案！",
+        icon: "⚠️",
+        type: "warning",
+        anchor: document.getElementById("dropZone") || document.getElementById("uploadSubmitBtn")
+      });
       return;
     }
 
@@ -227,13 +325,25 @@ function initEventListeners() {
       });
       if (!res.ok) throw new Error("上傳失敗");
       const data = await res.json();
-      alert(`《${data.title}》已成功入庫！`);
       uploadModal.classList.remove("active");
       uploadForm.reset();
       document.getElementById("fileSelectNotice").innerText = "點選或將檔案拖曳至此處";
+      showCustomAlert({
+        title: "入庫成功",
+        message: `《${data.title}》已成功入庫！`,
+        icon: "✅",
+        type: "success",
+        anchor: document.getElementById("openUploadBtn")
+      });
       handleSearch();
     } catch (err) {
-      alert("上傳解析失敗: " + err.message);
+      showCustomAlert({
+        title: "上傳解析失敗",
+        message: `上傳解析失敗: ${err.message}`,
+        icon: "❌",
+        type: "error",
+        anchor: document.getElementById("uploadSubmitBtn")
+      });
     } finally {
       submitBtn.innerText = "開始上傳與自動解析";
       submitBtn.disabled = false;
@@ -255,7 +365,12 @@ async function handleSearch() {
   const selectAllCheckbox = document.getElementById("selectAllCheckbox");
 
   if (!query) {
-    alert("請輸入欲搜尋的書名、作者、ISBN、DOI 或關鍵字！");
+    showCustomAlert({
+      title: "提示",
+      message: "請輸入欲搜尋的書名、作者、ISBN、DOI 或關鍵字！",
+      icon: "🔍",
+      anchor: document.getElementById("searchBtn") || document.getElementById("searchInput")
+    });
     return;
   }
 
@@ -409,13 +524,34 @@ function renderLocalBookCard(item) {
 
   return `
     <div class="book-card">
-      <div style="display: flex; align-items: center; padding-right: 0.5rem;">
-        <span style="font-size: 1.25rem;" title="本地已落地">💾</span>
+      <div class="book-card-header">
+        <div class="book-indicator-wrap">
+          <span style="font-size: 1.25rem;" title="本地已落地">💾</span>
+        </div>
+        <div class="book-more-wrap">
+          <button class="btn btn-icon btn-outline book-more-btn" onclick="toggleBookCardDropdown(this, event)" title="更多操作">
+            ⋯
+          </button>
+          <div class="book-dropdown-menu">
+            <button class="book-dropdown-item" onclick="openReader('${item.work_id}'); closeAllBookDropdowns();">
+              <span>📖</span> <span>線上閱讀</span>
+            </button>
+            <button class="book-dropdown-item" onclick="openQuickCollection('${item.work_id}', '${escapeHtml(item.title)}'); closeAllBookDropdowns();">
+              <span>⭐</span> <span>加入個人書單</span>
+            </button>
+            <a class="book-dropdown-item" href="${BASE_PATH}/api/files/${item.work_id}/raw" download title="下載原檔至本地" onclick="closeAllBookDropdowns();">
+              <span>📥</span> <span>下載原檔至本機</span>
+            </a>
+            <button class="book-dropdown-item" onclick="openDetail('${item.work_id}'); closeAllBookDropdowns();">
+              <span>ℹ️</span> <span>書籍元資料詳情</span>
+            </button>
+          </div>
+        </div>
       </div>
       <div class="book-main">
         <div class="book-title">${escapeHtml(item.title)}</div>
         <div class="book-meta">
-          <span class="tag tag-local">💾 本地已落地</span>
+          <span class="tag tag-local" title="本地已落地">💾</span>
           ${formatTag}
           ${langTag}
           <span>✍️ ${escapeHtml(item.authors_display || "未知作者")}</span>
@@ -427,12 +563,6 @@ function renderLocalBookCard(item) {
           <div style="margin-top: 0.5rem; font-size: 0.78rem; color: var(--accent);">已閱讀 ${progressPercent}%</div>
           <div class="progress-bar-bg"><div class="progress-bar-fill" style="width: ${progressPercent}%;"></div></div>
         ` : ""}
-      </div>
-      <div class="book-actions">
-        <button class="btn btn-primary" onclick="openReader('${item.work_id}')" title="線上閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
-        <button class="btn btn-secondary" onclick="openQuickCollection('${item.work_id}', '${escapeHtml(item.title)}')" title="加入個人書單" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⭐</button>
-        <a class="btn btn-secondary" href="${BASE_PATH}/api/files/${item.work_id}/raw" download title="下載原檔" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; text-decoration: none; display: inline-flex; align-items: center;">📥</a>
-        <button class="btn btn-outline" onclick="openDetail('${item.work_id}')" title="書目詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
       </div>
     </div>
   `;
@@ -460,61 +590,99 @@ function renderLiveBookCard(item) {
 
   let leftIndicatorHtml = "";
   let statusBadgeHtml = "";
-  let actionButtonsHtml = "";
+  let dropdownItemsHtml = "";
 
   if (isCompleted) {
     const targetWorkId = item.local_work_id || (queueJob && queueJob.work_id);
     leftIndicatorHtml = `<span style="font-size: 1.25rem;" title="本地已收錄">💾</span>`;
-    statusBadgeHtml = `<span class="tag tag-local">💾 本地已收錄</span>`;
-    actionButtonsHtml = `
-      <button class="btn btn-primary" onclick="openReader('${targetWorkId}')" title="線上閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
-      <button class="btn btn-secondary" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(item.title)}')" title="加入個人書單" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⭐</button>
-      <a class="btn btn-secondary" href="${BASE_PATH}/api/files/${targetWorkId}/raw" download title="下載原檔" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; text-decoration: none; display: inline-flex; align-items: center;">📥</a>
-      <button class="btn btn-outline" onclick="openDetail('${targetWorkId}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+    statusBadgeHtml = `<span class="tag tag-local" title="本地已收錄">💾</span>`;
+    dropdownItemsHtml = `
+      <button class="book-dropdown-item" onclick="openReader('${targetWorkId}'); closeAllBookDropdowns();">
+        <span>📖</span> <span>線上閱讀</span>
+      </button>
+      <button class="book-dropdown-item" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(item.title)}'); closeAllBookDropdowns();">
+        <span>⭐</span> <span>加入個人書單</span>
+      </button>
+      <a class="book-dropdown-item" href="${BASE_PATH}/api/files/${targetWorkId}/raw" download title="下載原檔至本地" onclick="closeAllBookDropdowns();">
+        <span>📥</span> <span>下載原檔至本機</span>
+      </a>
+      <button class="book-dropdown-item" onclick="openDetail('${targetWorkId}'); closeAllBookDropdowns();">
+        <span>ℹ️</span> <span>書籍元資料詳情</span>
+      </button>
     `;
   } else if (isDownloading) {
     leftIndicatorHtml = `<span class="pulse-anim" style="font-size: 1.15rem;" title="正在鏡像下載 (${queueJob.progress_percent}%)">⏳</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(56, 189, 248, 0.18); color: var(--accent); border: 1px solid var(--accent);"><span class="pulse-anim">⏳</span> 正在鏡像 (${queueJob.progress_percent}%)</span>`;
-    actionButtonsHtml = `
-      <button class="btn btn-secondary" onclick="openQueueModal()" title="正在鏡像 (${queueJob.progress_percent}%)，點擊查看佇列" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📥</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+    dropdownItemsHtml = `
+      <button class="book-dropdown-item" onclick="openQueueModal(); closeAllBookDropdowns();">
+        <span>📥</span> <span>查看下載佇列 (${queueJob.progress_percent}%)</span>
+      </button>
+      <button class="book-dropdown-item" onclick="previewLiveDetail('${item.md5}'); closeAllBookDropdowns();">
+        <span>ℹ️</span> <span>雲端書籍元資料詳情</span>
+      </button>
     `;
   } else if (isQueued) {
     leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="排隊收書中">⏳</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(245, 158, 11, 0.18); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4);">⏳ 排隊收書中</span>`;
-    actionButtonsHtml = `
-      <button class="btn btn-secondary" onclick="openQueueModal()" title="排隊中，點擊查看佇列" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">⏳</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+    dropdownItemsHtml = `
+      <button class="book-dropdown-item" onclick="openQueueModal(); closeAllBookDropdowns();">
+        <span>⏳</span> <span>查看排隊佇列</span>
+      </button>
+      <button class="book-dropdown-item" onclick="previewLiveDetail('${item.md5}'); closeAllBookDropdowns();">
+        <span>ℹ️</span> <span>雲端書籍元資料詳情</span>
+      </button>
     `;
   } else if (isPaused) {
     leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="已暫停">⏸️</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(148, 163, 184, 0.18); color: var(--text-muted);">⏸️ 暫停收書中</span>`;
-    actionButtonsHtml = `
-      <button class="btn btn-outline" onclick="resumeJob('${queueJob.job_id}')" title="繼續收書" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">▶️</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+    dropdownItemsHtml = `
+      <button class="book-dropdown-item" onclick="resumeJob('${queueJob.job_id}'); closeAllBookDropdowns();">
+        <span>▶️</span> <span>繼續鏡像收書</span>
+      </button>
+      <button class="book-dropdown-item" onclick="previewLiveDetail('${item.md5}'); closeAllBookDropdowns();">
+        <span>ℹ️</span> <span>雲端書籍元資料詳情</span>
+      </button>
     `;
   } else if (isFailed) {
     leftIndicatorHtml = `<span style="font-size: 1.15rem;" title="下載失敗">❌</span>`;
     statusBadgeHtml = `<span class="tag" style="background: rgba(239, 68, 68, 0.18); color: #ef4444;">❌ 收書失敗</span>`;
-    actionButtonsHtml = `
-      <button class="btn btn-primary" onclick="retryJob('${queueJob.job_id}')" title="重新收書" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">🔄</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+    dropdownItemsHtml = `
+      <button class="book-dropdown-item" onclick="retryJob('${queueJob.job_id}'); closeAllBookDropdowns();">
+        <span>🔄</span> <span>重新收書</span>
+      </button>
+      <button class="book-dropdown-item" onclick="previewLiveDetail('${item.md5}'); closeAllBookDropdowns();">
+        <span>ℹ️</span> <span>雲端書籍元資料詳情</span>
+      </button>
     `;
   } else {
     leftIndicatorHtml = item.md5 ? `
       <input type="checkbox" class="book-select-checkbox" data-md5="${item.md5}" title="勾選以進行批次收書" style="cursor: pointer; width: 18px; height: 18px;">
-    ` : `<span style="font-size: 1.25rem;">🌐</span>`;
-    statusBadgeHtml = `<span class="tag tag-remote">🌐 公網資源</span>`;
-    actionButtonsHtml = `
-      <button class="btn btn-primary" id="btn-dl-${item.md5}" onclick="triggerSingleDownload('${item.md5}')" title="鏡像收書至本地" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📥</button>
-      <button class="btn btn-outline" onclick="previewLiveDetail('${item.md5}')" title="書籍元資料詳情" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">ℹ️</button>
+    ` : `<span style="font-size: 1.25rem;" title="公網資源">🌐</span>`;
+    statusBadgeHtml = `<span class="tag tag-remote" title="公網資源">🌐</span>`;
+    dropdownItemsHtml = `
+      <button class="book-dropdown-item" id="btn-dl-${item.md5}" onclick="triggerSingleDownload('${item.md5}'); closeAllBookDropdowns();">
+        <span>📥</span> <span>鏡像收書至本地</span>
+      </button>
+      <button class="book-dropdown-item" onclick="previewLiveDetail('${item.md5}'); closeAllBookDropdowns();">
+        <span>ℹ️</span> <span>雲端書籍元資料詳情</span>
+      </button>
     `;
   }
 
   return `
-    <div class="book-card" style="align-items: center;">
-      <div style="display: flex; align-items: center; padding-right: 0.5rem;">
-        ${leftIndicatorHtml}
+    <div class="book-card">
+      <div class="book-card-header">
+        <div class="book-indicator-wrap">
+          ${leftIndicatorHtml}
+        </div>
+        <div class="book-more-wrap">
+          <button class="btn btn-icon btn-outline book-more-btn" onclick="toggleBookCardDropdown(this, event)" title="更多操作">
+            ⋯
+          </button>
+          <div class="book-dropdown-menu">
+            ${dropdownItemsHtml}
+          </div>
+        </div>
       </div>
       <div class="book-main">
         <div class="book-title">${escapeHtml(item.title)}</div>
@@ -528,9 +696,6 @@ function renderLiveBookCard(item) {
           ${item.publisher ? `<span>🏢 ${escapeHtml(item.publisher)}</span>` : ""}
           ${item.md5 ? `<span style="font-family:monospace; font-size:0.75rem; color:var(--text-muted);">MD5: ${item.md5.substring(0, 8)}...</span>` : ""}
         </div>
-      </div>
-      <div class="book-actions">
-        ${actionButtonsHtml}
       </div>
     </div>
   `;
@@ -590,7 +755,13 @@ async function triggerSingleDownload(md5) {
     }
     openQueueModal();
   } catch (err) {
-    alert("鏡像下載啟動失敗: " + err.message);
+    showCustomAlert({
+      title: "下載失敗",
+      message: `鏡像下載啟動失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: btn
+    });
     if (btn) {
       btn.innerText = "📥 鏡像收書";
       btn.disabled = false;
@@ -623,12 +794,24 @@ async function triggerBatchDownload() {
     });
     if (!res.ok) throw new Error("批次下載失敗");
     const data = await res.json();
-    alert(`已成功將 ${data.enqueued_count} 本書籍加入本地鏡像下載佇列！`);
     selectedMd5s.clear();
     updateBatchBar();
     openQueueModal();
+    showCustomAlert({
+      title: "已加入下載佇列",
+      message: `已成功將 <b>${data.enqueued_count}</b> 本書籍加入本地鏡像下載佇列！`,
+      icon: "📥",
+      type: "success",
+      anchor: document.getElementById("batchDownloadBtn") || document.getElementById("openQueueBtn")
+    });
   } catch (err) {
-    alert("批次下載失敗: " + err.message);
+    showCustomAlert({
+      title: "批次下載失敗",
+      message: `批次下載失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: document.getElementById("batchDownloadBtn")
+    });
   }
 }
 
@@ -638,7 +821,12 @@ async function retryJob(jobId) {
     if (!res.ok) throw new Error("重試失敗");
     refreshQueueModal();
   } catch (e) {
-    alert("重試任務失敗: " + e.message);
+    showCustomAlert({
+      title: "重試失敗",
+      message: `重試任務失敗: ${e.message}`,
+      icon: "❌",
+      type: "error"
+    });
   }
 }
 
@@ -801,10 +989,10 @@ function startQueuePolling() {
 }
 
 function getFormatTag(format) {
-  if (format === "pdf_born_digital") return '<span class="tag tag-pdf-born">原生 PDF</span>';
-  if (format === "pdf_scanned") return '<span class="tag tag-pdf-scan">掃描件 PDF</span>';
-  if (format === "epub") return '<span class="tag tag-epub">EPUB</span>';
-  return '<span class="tag tag-pdf-born">PDF</span>';
+  if (format === "pdf_born_digital") return '<span class="tag tag-pdf-born" title="原生 PDF (數位原版)">📕</span>';
+  if (format === "pdf_scanned") return '<span class="tag tag-pdf-scan" title="掃描版 PDF (影像掃描)">📷</span>';
+  if (format === "epub") return '<span class="tag tag-epub" title="EPUB 電子書 (流式排版)">📗</span>';
+  return '<span class="tag tag-pdf-born" title="PDF 文件">📕</span>';
 }
 
 async function openDetail(workId) {
@@ -1139,11 +1327,424 @@ function initSettingsModal() {
     }
   }
   updateExtensionStatusIndicator();
+  loadLibgenMirrorsSettings();
 }
 
-async function handleSelectLocalDirectory() {
+// === 自訂 Libgen 來源與鏡像管理 (Custom Libgen Mirrors & Pre-flight Validation) ===
+let cachedLibgenMirrors = [];
+
+async function loadLibgenMirrorsSettings() {
+  const container = document.getElementById("mirrorsListContainer");
+  if (!container) return;
+  
+  try {
+    const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors`);
+    if (!res.ok) throw new Error("讀取鏡像設定失敗");
+    cachedLibgenMirrors = await res.json();
+    renderLibgenMirrorsList(cachedLibgenMirrors);
+    await loadDispatchedIssuesNotice();
+  } catch (err) {
+    console.error("載入鏡像失敗:", err);
+    container.innerHTML = `<p style="color: #ef4444; font-size: 0.85rem; padding: 1rem; text-align: center;">載入失敗: ${err.message}</p>`;
+  }
+}
+
+function renderLibgenMirrorsList(mirrors) {
+  const container = document.getElementById("mirrorsListContainer");
+  if (!container) return;
+
+  if (!mirrors || mirrors.length === 0) {
+    container.innerHTML = `<p style="color: var(--text-muted); font-size: 0.85rem; padding: 1rem; text-align: center;">目前無設定任何鏡像來源，請點選「恢復預設」或手動新增。</p>`;
+    return;
+  }
+
+  container.innerHTML = mirrors.map((m, idx) => {
+    const safeId = "m_" + btoa(m.url).replace(/[^a-zA-Z0-9]/g, "").substring(0, 16);
+    
+    // 狀態標籤
+    let statusBadge = "";
+    if (m.validation_status === "verified") {
+      statusBadge = `<span class="tag" style="background: rgba(16, 185, 129, 0.18); color: #34d399; font-size: 0.72rem;">🟢 通過驗證</span>`;
+    } else if (m.validation_status === "incompatible_layout") {
+      const brLink = m.br_id ? `<span title="點擊查看 BR 報告" style="cursor: pointer; text-decoration: underline;" onclick="showBrDetailModal('${m.br_id}', '${escapeHtml(m.last_error || '')}')">[${m.br_id}]</span>` : "";
+      statusBadge = `<span class="tag" style="background: rgba(239, 68, 68, 0.18); color: #f87171; font-size: 0.72rem;" title="${escapeHtml(m.last_error || '結構無法解析')}">⚠️ 結構不相容 ${brLink}</span>`;
+    } else if (m.validation_status === "offline") {
+      statusBadge = `<span class="tag" style="background: rgba(100, 116, 139, 0.2); color: var(--text-muted); font-size: 0.72rem;" title="${escapeHtml(m.last_error || '連線逾時')}">🔴 連線失敗</span>`;
+    } else {
+      statusBadge = `<span class="tag" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; font-size: 0.72rem;">⏳ 待驗證</span>`;
+    }
+
+    // 適配器標籤
+    let adapterBadge = "";
+    if (m.adapter_type === "libgen_li") {
+      adapterBadge = `<span class="tag" style="background: rgba(56, 189, 248, 0.15); color: var(--accent); font-size: 0.7rem;">Libgen.li 系列</span>`;
+    } else if (m.adapter_type === "libgen_is") {
+      adapterBadge = `<span class="tag" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; font-size: 0.7rem;">Libgen.is 傳統</span>`;
+    } else if (m.adapter_type === "direct_gateway") {
+      adapterBadge = `<span class="tag" style="background: rgba(234, 179, 8, 0.15); color: #facc15; font-size: 0.7rem;">直鏈 Gateway</span>`;
+    }
+
+    const latencyText = m.latency_ms ? `${m.latency_ms} ms` : "-- ms";
+
+    return `
+      <div class="mirror-item-row status-${m.validation_status || 'unverified'}" id="row-${safeId}">
+        <div style="display: flex; align-items: center; gap: 0.55rem; flex: 1; min-width: 0;">
+          <input type="checkbox" class="mirror-toggle-checkbox" data-url="${escapeHtml(m.url)}" ${m.enabled ? "checked" : ""} title="啟用/停用此來源" style="width: 16px; height: 16px; cursor: pointer;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
+              <span style="font-family: monospace; font-weight: 700; font-size: 0.88rem; color: var(--text-primary);">${escapeHtml(m.url)}</span>
+              ${m.is_default ? `<span class="tag" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; font-size: 0.7rem;">內建</span>` : `<span class="tag" style="background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 0.7rem;">自訂</span>`}
+              ${statusBadge}
+              ${adapterBadge}
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              ${escapeHtml(m.note || "無備註")} • 抽樣解析: ${m.sample_records_count || 0} 筆
+            </div>
+          </div>
+        </div>
+
+        <div class="mirror-actions-wrap">
+          <span class="mirror-ping-badge" id="ping-${safeId}" style="font-size: 0.75rem; color: var(--text-muted); min-width: 52px; text-align: right; font-family: monospace;">${latencyText}</span>
+          <button class="btn btn-secondary mirror-action-btn" onclick="handleValidateSingleMirror('${m.url}', '${safeId}', this)" title="執行預檢驗證與爬取適配器測試">⚡</button>
+          <button class="btn btn-secondary mirror-action-btn" onclick="handleMoveMirror(${idx}, -1)" title="調高優先級" ${idx === 0 ? 'disabled style="opacity: 0.4; cursor: not-allowed;"' : ''}>⬆️</button>
+          <button class="btn btn-secondary mirror-action-btn" onclick="handleMoveMirror(${idx}, 1)" title="降低優先級" ${idx === mirrors.length - 1 ? 'disabled style="opacity: 0.4; cursor: not-allowed;"' : ''}>⬇️</button>
+          <button class="btn btn-outline mirror-action-btn" onclick="handleDeleteMirror('${m.url}', event)" title="刪除此來源" style="color: #ef4444;">🗑️</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  // 綁定開關事件
+  container.querySelectorAll(".mirror-toggle-checkbox").forEach(cb => {
+    cb.addEventListener("change", async (e) => {
+      const url = e.target.dataset.url;
+      const checked = e.target.checked;
+      await handleToggleMirror(url, checked);
+    });
+  });
+}
+
+async function handleValidateSingleMirror(url, safeId, btn) {
+  const pingEl = document.getElementById(`ping-${safeId}`);
+  if (pingEl) pingEl.innerText = "驗證中...";
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: url, auto_dispatch_br: true })
+    });
+    if (!res.ok) throw new Error("預檢驗證請求失敗");
+    const report = await res.json();
+    
+    await loadLibgenMirrorsSettings();
+
+    if (report.validation_status === "verified") {
+      showCustomAlert({
+        title: "預檢驗證通過",
+        message: `鏡像 <b>${escapeHtml(url)}</b> 驗證成功！<br>• 適配器: <code>${report.adapter_type}</code><br>• 延遲: <code>${report.latency_ms} ms</code><br>• 抽樣解析: <code>${report.sample_records_count} 筆</code><br><span style="color: #10b981;">已正式啟用並納入檢索與下載輪替池。</span>`,
+        icon: "🟢",
+        type: "success",
+        anchor: btn
+      });
+    } else if (report.validation_status === "incompatible_layout") {
+      showCustomAlert({
+        title: "結構不相容 · 自動建立 BR 報告",
+        message: `鏡像 <b>${escapeHtml(url)}</b> 連線正常但無法解析 HTML 表格。<br><span style="color: #ef4444; font-size: 0.85rem;">已自動發送 Bug Report：<code>${report.br_id}</code></span><br>該來源已被隔離暫停，待開發專屬解析適配器。`,
+        icon: "⚠️",
+        type: "warning",
+        anchor: btn
+      });
+    } else {
+      showCustomAlert({
+        title: "連線失敗",
+        message: `鏡像 <b>${escapeHtml(url)}</b> 連線失敗: ${escapeHtml(report.error_message || '逾時')}`,
+        icon: "❌",
+        type: "error",
+        anchor: btn
+      });
+    }
+  } catch (err) {
+    console.error("預檢驗證錯誤:", err);
+    if (pingEl) pingEl.innerText = "錯誤";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleValidateAllMirrors() {
+  const btn = document.getElementById("validateAllMirrorsBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "⏳ 驗證中...";
+  }
+
+  let successCount = 0;
+  let brCount = 0;
+  let offlineCount = 0;
+
+  for (const m of cachedLibgenMirrors) {
+    try {
+      const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: m.url, auto_dispatch_br: true })
+      });
+      if (res.ok) {
+        const rep = await res.json();
+        if (rep.validation_status === "verified") successCount++;
+        else if (rep.validation_status === "incompatible_layout") brCount++;
+        else offlineCount++;
+      }
+    } catch (e) {
+      offlineCount++;
+    }
+  }
+
+  await loadLibgenMirrorsSettings();
+
+  if (btn) {
+    btn.disabled = false;
+    btn.innerText = "⚡ 全部預檢驗證";
+  }
+
+  showCustomAlert({
+    title: "全部預檢驗證完成",
+    message: `共驗證 <b>${cachedLibgenMirrors.length}</b> 個鏡像來源：<br>• 🟢 驗證通過: <b>${successCount}</b> 個<br>• ⚠️ 結構不相容 (已發 BR): <b>${brCount}</b> 個<br>• 🔴 斷線或逾時: <b>${offlineCount}</b> 個`,
+    icon: "⚡",
+    type: "success",
+    anchor: btn
+  });
+}
+
+async function handleAddCustomMirror() {
+  const urlInput = document.getElementById("newMirrorUrlInput");
+  const noteInput = document.getElementById("newMirrorNoteInput");
+  const addBtn = document.getElementById("addMirrorBtn");
+
+  const rawUrl = (urlInput ? urlInput.value : "").trim();
+  const note = (noteInput ? noteInput.value : "").trim();
+
+  if (!rawUrl) {
+    showCustomAlert({
+      title: "請輸入網址",
+      message: "請輸入有效的 Libgen 來源或鏡像網址。",
+      icon: "⚠️",
+      anchor: addBtn
+    });
+    return;
+  }
+
+  let formattedUrl = rawUrl;
+  if (!formattedUrl.startsWith("http://") && !formattedUrl.startsWith("https://")) {
+    formattedUrl = `https://${formattedUrl}`;
+  }
+
+  if (addBtn) {
+    addBtn.disabled = true;
+    addBtn.innerText = "⏳ 預檢驗證中...";
+  }
+
+  try {
+    const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: formattedUrl, auto_dispatch_br: true })
+    });
+    if (!res.ok) throw new Error("新增鏡像預檢驗證失敗");
+    const report = await res.json();
+
+    // 更新備註
+    if (note) {
+      const getRes = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors`);
+      if (getRes.ok) {
+        const list = await getRes.json();
+        const target = list.find(m => m.url === formattedUrl || m.url === report.url);
+        if (target) {
+          target.note = note;
+          await fetch(`${BASE_PATH}/api/settings/libgen-mirrors`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mirrors: list })
+          });
+        }
+      }
+    }
+
+    urlInput.value = "";
+    if (noteInput) noteInput.value = "";
+    await loadLibgenMirrorsSettings();
+
+    if (report.validation_status === "verified") {
+      showCustomAlert({
+        title: "來源新增並通過驗證",
+        message: `自訂來源 <b>${escapeHtml(formattedUrl)}</b> 預檢驗證通過（${report.adapter_type}，${report.latency_ms} ms），已正式上線啟用！`,
+        icon: "🎉",
+        type: "success",
+        anchor: addBtn
+      });
+    } else if (report.validation_status === "incompatible_layout") {
+      showCustomAlert({
+        title: "來源新增但結構無法解析",
+        message: `來源 <b>${escapeHtml(formattedUrl)}</b> 連線正常但無法以現有爬蟲解析，已<b>自動向 Repo 發送 ${report.br_id}</b> 並暫停隔離，等待適配器修復。`,
+        icon: "⚠️",
+        type: "warning",
+        anchor: addBtn
+      });
+    } else {
+      showCustomAlert({
+        title: "來源無法連線",
+        message: `來源 <b>${escapeHtml(formattedUrl)}</b> 無法連線（${report.error_message || '逾時'}），已加入但預設處於停用狀態。`,
+        icon: "🔴",
+        type: "warning",
+        anchor: addBtn
+      });
+    }
+  } catch (err) {
+    showCustomAlert({
+      title: "新增失敗",
+      message: `新增鏡像失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: addBtn
+    });
+  } finally {
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.innerText = "➕ 新增並驗證";
+    }
+  }
+}
+
+async function handleToggleMirror(url, checked) {
+  const mirror = cachedLibgenMirrors.find(m => m.url === url);
+  if (mirror) {
+    mirror.enabled = checked;
+    await saveCurrentMirrors();
+  }
+}
+
+async function handleMoveMirror(index, direction) {
+  const newIndex = index + direction;
+  if (newIndex < 0 || newIndex >= cachedLibgenMirrors.length) return;
+
+  const item = cachedLibgenMirrors.splice(index, 1)[0];
+  cachedLibgenMirrors.splice(newIndex, 0, item);
+  
+  // 重新編號優先級
+  cachedLibgenMirrors.forEach((m, i) => { m.priority = i + 1; });
+  renderLibgenMirrorsList(cachedLibgenMirrors);
+  await saveCurrentMirrors();
+}
+
+async function handleDeleteMirror(url, event) {
+  const anchor = event ? (event.currentTarget || event.target) : null;
+  const confirmed = await showCustomConfirm({
+    title: "刪除來源",
+    message: `確定要移除鏡像來源「<b>${escapeHtml(url)}</b>」嗎？`,
+    confirmText: "確認刪除",
+    cancelText: "取消",
+    isDanger: true,
+    icon: "🗑️",
+    anchor: anchor
+  });
+  if (!confirmed) return;
+
+  cachedLibgenMirrors = cachedLibgenMirrors.filter(m => m.url !== url);
+  cachedLibgenMirrors.forEach((m, i) => { m.priority = i + 1; });
+  renderLibgenMirrorsList(cachedLibgenMirrors);
+  await saveCurrentMirrors();
+}
+
+async function handleResetMirrors() {
+  const btn = document.getElementById("resetMirrorsBtn");
+  const confirmed = await showCustomConfirm({
+    title: "恢復原廠預設",
+    message: "確定要將 Libgen 鏡像清單重設回原廠預設設定嗎？（將保留官方內建 9 組鏡像節點）",
+    confirmText: "確認恢復",
+    cancelText: "取消",
+    icon: "🔄",
+    anchor: btn
+  });
+  if (!confirmed) return;
+
+  try {
+    const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/reset`, { method: "POST" });
+    if (!res.ok) throw new Error("重設失敗");
+    cachedLibgenMirrors = await res.json();
+    renderLibgenMirrorsList(cachedLibgenMirrors);
+    showCustomAlert({
+      title: "已恢復預設來源",
+      message: "已成功恢復系統預設 Libgen 鏡像來源清單！",
+      icon: "✅",
+      type: "success",
+      anchor: btn
+    });
+  } catch (err) {
+    showCustomAlert({
+      title: "重設失敗",
+      message: `恢復預設失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: btn
+    });
+  }
+}
+
+async function saveCurrentMirrors() {
+  try {
+    await fetch(`${BASE_PATH}/api/settings/libgen-mirrors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mirrors: cachedLibgenMirrors })
+    });
+  } catch (e) {
+    console.error("儲存鏡像清單失敗:", e);
+  }
+}
+
+async function loadDispatchedIssuesNotice() {
+  const noticeEl = document.getElementById("dispatchedIssuesNotice");
+  if (!noticeEl) return;
+
+  try {
+    const res = await fetch(`${BASE_PATH}/api/settings/libgen-mirrors/issues`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.total > 0) {
+      noticeEl.style.display = "block";
+      noticeEl.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <span>📋 系統已自動向 Repo 提出 <b>${data.total}</b> 份爬蟲適配器缺失報告 (BR)</span>
+          <span style="font-size: 0.75rem; color: #f87171;">已自動隔離無效來源</span>
+        </div>
+      `;
+    } else {
+      noticeEl.style.display = "none";
+    }
+  } catch (e) {
+    noticeEl.style.display = "none";
+  }
+}
+
+function showBrDetailModal(brId, errorMsg) {
+  showCustomAlert({
+    title: `Bug Report: ${brId}`,
+    message: `此來源目前處於隔離狀態，失敗詳情：<br><pre style="background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; margin-top: 0.4rem;">${escapeHtml(errorMsg || '未知錯誤')}</pre><br><span style="font-size: 0.8rem; color: var(--text-muted);">報告已寫入專案 <code>issues/${brId}.md</code>，待開發適配器修復後即可重新驗證上線。</span>`,
+    icon: "📋"
+  });
+}
+
+async function handleSelectLocalDirectory(event) {
+  const anchor = event ? (event.currentTarget || event.target) : document.getElementById("selectLocalDirBtn");
   if (!window.showDirectoryPicker) {
-    alert("您的瀏覽器不支援直接選取本地資料夾（File System Access API）。系統將透過瀏覽器預設下載機制自動下載保存。");
+    showCustomAlert({
+      title: "瀏覽器限制",
+      message: "您的瀏覽器不支援直接選取本地資料夾（File System Access API）。系統將透過瀏覽器預設下載機制自動下載保存。",
+      icon: "ℹ️",
+      anchor: anchor
+    });
     return;
   }
   try {
@@ -1158,12 +1759,24 @@ async function handleSelectLocalDirectory() {
 
       const pathDisplay = document.getElementById("localDirPathDisplay");
       if (pathDisplay) pathDisplay.innerText = `📁 目前指定: ${dirHandle.name}`;
-      alert(`已成功指定本機儲存目錄: ${dirHandle.name}！收書落地時將自動寫入此資料夾。`);
+      showCustomAlert({
+        title: "本機儲存已就緒",
+        message: `已成功指定本機儲存目錄：<b>${dirHandle.name}</b>！<br>收書落地時將自動寫入此資料夾。`,
+        icon: "📁",
+        type: "success",
+        anchor: anchor
+      });
     }
   } catch (err) {
     if (err.name !== "AbortError") {
       console.error("選取目錄失敗:", err);
-      alert("選取目錄失敗: " + err.message);
+      showCustomAlert({
+        title: "選取目錄失敗",
+        message: `選取目錄失敗: ${err.message}`,
+        icon: "❌",
+        type: "error",
+        anchor: anchor
+      });
     }
   }
 }
@@ -1218,6 +1831,7 @@ let quickTargetWorkTitle = null;
 async function openCollectionsModal(targetColId = null) {
   const modal = document.getElementById("collectionsModal");
   modal.classList.add("active");
+  modal.classList.remove("in-detail-view");
   await loadCollectionsList(targetColId);
 }
 
@@ -1307,12 +1921,15 @@ function renderChromeFolderDetail(folderNode) {
 
   mainView.innerHTML = `
     <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 1rem;">
-      <div>
-        <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem;">
-          <span>📁</span>
-          <span>${escapeHtml(folderNode.title)}</span>
-        </h3>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Chrome 原生書籤資料夾 • 共 ${items.length} 筆書籤</p>
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <button class="btn btn-secondary mobile-back-btn" onclick="document.getElementById('collectionsModal').classList.remove('in-detail-view')" title="返回書單列表" style="padding: 0.25rem 0.65rem; font-size: 0.85rem;">⬅️</button>
+        <div>
+          <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
+            <span>📁</span>
+            <span>${escapeHtml(folderNode.title)}</span>
+          </h3>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Chrome 原生書籤資料夾 • 共 ${items.length} 筆書籤</p>
+        </div>
       </div>
     </div>
 
@@ -1327,13 +1944,13 @@ function renderChromeFolderDetail(folderNode) {
           <div class="book-main">
             <div class="book-title">${escapeHtml(it.title)}</div>
             <div class="book-meta">
-              <span class="tag tag-local">🌐 Chrome 原生書籤</span>
+              <span class="tag tag-local" title="Chrome 原生書籤">🌐</span>
               <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(it.url)}</span>
             </div>
           </div>
-          <div class="book-actions">
-            <a class="btn btn-primary" href="${it.url}" target="_blank" title="立即閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; text-decoration: none;">📖</a>
-            <button class="btn btn-outline" onclick="removeChromeBookmark('${it.id}')" title="刪除書籤" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; color: #ef4444;">❌</button>
+        <div class="book-actions">
+            <a class="btn btn-icon btn-primary" href="${it.url}" target="_blank" title="立即閱讀">👁️</a>
+            <button class="btn btn-icon btn-outline" onclick="removeChromeBookmark('${it.id}', '${escapeHtml(it.title)}', event)" title="刪除書籤" style="color: #ef4444;">❌</button>
           </div>
         </div>
       `).join("")}
@@ -1341,7 +1958,18 @@ function renderChromeFolderDetail(folderNode) {
   `;
 }
 
-async function removeChromeBookmark(bookmarkId) {
+async function removeChromeBookmark(bookmarkId, title, event) {
+  const anchor = event ? (event.currentTarget || event.target) : null;
+  const confirmed = await showCustomConfirm({
+    title: "刪除書籤",
+    message: `確定要刪除「<b>${escapeHtml(title || '此書籤')}</b>」嗎？`,
+    confirmText: "確認刪除",
+    cancelText: "取消",
+    isDanger: true,
+    icon: "🗑️",
+    anchor: anchor
+  });
+  if (!confirmed) return;
   await callExtension("REMOVE_BOOKMARK", { bookmarkId });
   await loadCollectionsList(currentActiveCollectionId);
 }
@@ -1350,6 +1978,7 @@ async function selectCollection(collectionId) {
   currentActiveCollectionId = collectionId;
   const items = document.querySelectorAll(".collection-sidebar-item");
   items.forEach(el => el.classList.remove("active"));
+  document.getElementById("collectionsModal").classList.add("in-detail-view");
   await loadCollectionsList(collectionId);
 }
 
@@ -1363,16 +1992,19 @@ async function loadCollectionDetail(collectionId) {
     const isSystem = col.is_system === 1;
     mainView.innerHTML = `
       <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 1rem;">
-        <div>
-          <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem;">
-            <span>${col.icon || '📚'}</span>
-            <span>${escapeHtml(col.name)}</span>
-          </h3>
-          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(col.description || '自訂書單')} • 共 ${col.items.length} 本書籍</p>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button class="btn btn-secondary mobile-back-btn" onclick="document.getElementById('collectionsModal').classList.remove('in-detail-view')" title="返回書單列表" style="padding: 0.25rem 0.65rem; font-size: 0.85rem;">⬅️</button>
+          <div>
+            <h3 style="font-size: 1.3rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
+              <span>${col.icon || '📚'}</span>
+              <span>${escapeHtml(col.name)}</span>
+            </h3>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(col.description || '自訂書單')} • 共 ${col.items.length} 本書籍</p>
+          </div>
         </div>
         <div style="display: flex; gap: 0.5rem;">
-          <button class="btn btn-outline" onclick="renameCollectionPrompt('${col.collection_id}', '${escapeHtml(col.name)}')" title="重命名書單" style="padding: 0.35rem 0.65rem;">✏️</button>
-          ${!isSystem ? `<button class="btn btn-outline" onclick="deleteCollectionPrompt('${col.collection_id}')" title="刪除此書單" style="padding: 0.35rem 0.65rem; color: #ef4444;">🗑️</button>` : ''}
+          <button class="btn btn-outline" onclick="renameCollectionPrompt('${col.collection_id}', '${escapeHtml(col.name)}', event)" title="重命名書單" style="padding: 0.35rem 0.65rem;">✏️</button>
+          ${!isSystem ? `<button class="btn btn-outline" onclick="deleteCollectionPrompt('${col.collection_id}', '${escapeHtml(col.name)}', event)" title="刪除此書單" style="padding: 0.35rem 0.65rem; color: #ef4444;">🗑️</button>` : ''}
         </div>
       </div>
 
@@ -1387,15 +2019,15 @@ async function loadCollectionDetail(collectionId) {
             <div class="book-main">
               <div class="book-title">${escapeHtml(it.work.title)}</div>
               <div class="book-meta">
-                <span class="tag tag-local">💾 本地</span>
+                <span class="tag tag-local" title="本地書單藏書">💾</span>
                 ${getFormatTag(it.work.format)}
                 <span>✍️ ${escapeHtml(it.work.authors_display || "未知作者")}</span>
                 ${it.work.publication_year ? `<span>• ${it.work.publication_year}年</span>` : ''}
               </div>
             </div>
             <div class="book-actions">
-              <button class="btn btn-primary" onclick="openReader('${it.work_id}')" title="立即閱讀" style="padding: 0.4rem 0.75rem; font-size: 1.1rem;">📖</button>
-              <button class="btn btn-outline" onclick="removeBookFromCollection('${col.collection_id}', '${it.work_id}')" title="從書單移除" style="padding: 0.4rem 0.75rem; font-size: 1.1rem; color: #ef4444;">❌</button>
+              <button class="btn btn-icon btn-primary" onclick="openReader('${it.work_id}')" title="立即閱讀">📖</button>
+              <button class="btn btn-icon btn-outline" onclick="removeBookFromCollection('${col.collection_id}', '${it.work_id}', '${escapeHtml(it.work.title)}', event)" title="從書單移除" style="color: #ef4444;">❌</button>
             </div>
           </div>
         `).join("")}
@@ -1406,26 +2038,67 @@ async function loadCollectionDetail(collectionId) {
   }
 }
 
-async function createNewCollectionPrompt() {
-  const name = prompt("請輸入新書單名稱（例如：科幻經典、待讀清單）：");
+async function createNewCollectionPrompt(eventOrAnchor) {
+  const anchor = (eventOrAnchor && eventOrAnchor.currentTarget) ? eventOrAnchor.currentTarget : (eventOrAnchor || document.getElementById("newCollectionBtn"));
+  const name = await showCustomPrompt({
+    title: "新建個人書單",
+    message: "請輸入新書單名稱（例如：科幻經典、待讀清單）：",
+    placeholder: "書單名稱...",
+    confirmText: "建立書單",
+    cancelText: "取消",
+    icon: "📚",
+    anchor: anchor
+  });
   if (!name || !name.trim()) return;
+
+  if (isChromeExtensionAvailable) {
+    try {
+      const extRes = await callExtension("CREATE_FOLDER", { name: name.trim() });
+      if (extRes && extRes.success) {
+        await loadCollectionsList(extRes.data ? extRes.data.id : null);
+        return;
+      }
+    } catch (e) {
+      console.warn("Chrome 擴充套件建立書單資料夾失敗，改用後端:", e);
+    }
+  }
+
   try {
     const res = await fetch(`${BASE_PATH}/api/collections`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: name.trim(), icon: "📚" })
     });
-    if (res.ok) {
-      const data = await res.json();
-      await loadCollectionsList(data.collection_id);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `伺服器回應錯誤 (${res.status})`);
     }
+    const data = await res.json();
+    await loadCollectionsList(data.collection_id);
   } catch (err) {
     console.error("建立書單失敗:", err);
+    showCustomAlert({
+      title: "建立書單失敗",
+      message: `建立失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: anchor
+    });
   }
 }
 
-async function renameCollectionPrompt(colId, currentName) {
-  const newName = prompt("請輸入書單新名稱：", currentName);
+async function renameCollectionPrompt(colId, currentName, event) {
+  const anchor = event ? (event.currentTarget || event.target) : null;
+  const newName = await showCustomPrompt({
+    title: "重命名書單",
+    message: "請輸入書單新名稱：",
+    defaultValue: currentName,
+    placeholder: "書單名稱...",
+    confirmText: "儲存名稱",
+    cancelText: "取消",
+    icon: "✏️",
+    anchor: anchor
+  });
   if (!newName || !newName.trim() || newName.trim() === currentName) return;
   try {
     const res = await fetch(`${BASE_PATH}/api/collections/${colId}`, {
@@ -1433,30 +2106,69 @@ async function renameCollectionPrompt(colId, currentName) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: newName.trim() })
     });
-    if (res.ok) {
-      await loadCollectionsList(colId);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `伺服器回應錯誤 (${res.status})`);
     }
+    await loadCollectionsList(colId);
   } catch (err) {
     console.error("重命名失敗:", err);
+    showCustomAlert({
+      title: "重命名失敗",
+      message: `重命名失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: anchor
+    });
   }
 }
 
-async function deleteCollectionPrompt(colId) {
-  if (!confirm("確定要刪除此書單嗎？（不會刪除書籍本體）")) return;
+async function deleteCollectionPrompt(colId, colName, event) {
+  const anchor = event ? (event.currentTarget || event.target) : null;
+  const confirmed = await showCustomConfirm({
+    title: "刪除書單",
+    message: `確定要刪除「<b>${escapeHtml(colName || '此書單')}</b>」嗎？<br><span style="font-size: 0.8rem; color: var(--text-muted);">（不會刪除書籍本體檔案）</span>`,
+    confirmText: "確認刪除",
+    cancelText: "保留書單",
+    isDanger: true,
+    icon: "🗑️",
+    anchor: anchor
+  });
+  if (!confirmed) return;
   try {
     const res = await fetch(`${BASE_PATH}/api/collections/${colId}`, {
       method: "DELETE"
     });
-    if (res.ok) {
-      currentActiveCollectionId = null;
-      await loadCollectionsList();
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `伺服器回應錯誤 (${res.status})`);
     }
+    currentActiveCollectionId = null;
+    await loadCollectionsList();
   } catch (err) {
     console.error("刪除失敗:", err);
+    showCustomAlert({
+      title: "刪除失敗",
+      message: `刪除失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: anchor
+    });
   }
 }
 
-async function removeBookFromCollection(colId, workId) {
+async function removeBookFromCollection(colId, workId, bookTitle, event) {
+  const anchor = event ? (event.currentTarget || event.target) : null;
+  const confirmed = await showCustomConfirm({
+    title: "移除書籍",
+    message: `確定要從此書單移除「<b>${escapeHtml(bookTitle || '此書籍')}</b>」嗎？`,
+    confirmText: "確認移除",
+    cancelText: "取消",
+    isDanger: true,
+    icon: "❌",
+    anchor: anchor
+  });
+  if (!confirmed) return;
   try {
     const res = await fetch(`${BASE_PATH}/api/collections/${colId}/items/${workId}`, {
       method: "DELETE"
@@ -1466,6 +2178,257 @@ async function removeBookFromCollection(colId, workId) {
     }
   } catch (err) {
     console.error("移除書籍失敗:", err);
+  }
+}
+
+// === 個人書單可攜化：Netscape HTML 書籤匯出 / 匯入 & JSON 備份 ===
+
+async function fetchAllCollectionsWithItems() {
+  const res = await fetch(`${BASE_PATH}/api/collections`);
+  if (!res.ok) throw new Error("讀取書單列表失敗");
+  const list = await res.json();
+  
+  const fullCollections = [];
+  for (const c of list) {
+    try {
+      const detailRes = await fetch(`${BASE_PATH}/api/collections/${c.collection_id}`);
+      if (detailRes.ok) {
+        fullCollections.push(await detailRes.json());
+      } else {
+        fullCollections.push(c);
+      }
+    } catch (e) {
+      fullCollections.push(c);
+    }
+  }
+  return fullCollections;
+}
+
+async function exportCollectionsAsNetscapeHtml(anchor) {
+  try {
+    const collections = await fetchAllCollectionsWithItems();
+    if (!collections || collections.length === 0) {
+      showCustomAlert({
+        title: "書單為空",
+        message: "您目前尚未建立任何書單，請先建立書單或收藏書籍後再行匯出。",
+        icon: "ℹ️",
+        anchor: anchor
+      });
+      return;
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const dateStr = new Date().toISOString().split("T")[0];
+    let html = `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<!-- This is an automatically generated file. -->
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>CMS圖書館書籤</TITLE>
+<H1>CMS圖書館書籤</H1>
+<DL><p>
+    <DT><H3 ADD_DATE="${timestamp}" LAST_MODIFIED="${timestamp}">CMS圖書館</H3>
+    <DL><p>
+`;
+
+    let totalBooks = 0;
+    collections.forEach(col => {
+      html += `        <DT><H3 ADD_DATE="${timestamp}" LAST_MODIFIED="${timestamp}">${escapeHtml(col.name)}</H3>\n`;
+      html += `        <DL><p>\n`;
+      (col.items || []).forEach(it => {
+        totalBooks++;
+        const title = it.work ? it.work.title : (it.title || "書籍");
+        const authors = (it.work && it.work.authors) ? it.work.authors.map(a => a.name).join(", ") : "";
+        const displayTitle = authors ? `${title} - ${authors}` : title;
+        const workUrl = `${window.location.origin}${BASE_PATH}/reader?work_id=${it.work_id}`;
+        html += `            <DT><A HREF="${workUrl}" ADD_DATE="${timestamp}">${escapeHtml(displayTitle)}</A>\n`;
+      });
+      html += `        </DL><p>\n`;
+    });
+
+    html += `    </DL><p>\n</DL><p>`;
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `CMS圖書館_書籤_${dateStr}.html`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1500);
+
+    showCustomAlert({
+      title: "書籤匯出成功",
+      message: `已成功匯出 <b>${collections.length}</b> 個書單、共 <b>${totalBooks}</b> 筆書籍連結為標準 <code>.html</code> 書籤檔！<br><span style="font-size: 0.8rem; color: var(--text-muted);">可在 Chrome、Safari、Edge、Firefox 點選「匯入書籤」或直接存放於 Google Drive / OneDrive。</span>`,
+      icon: "💾",
+      type: "success",
+      anchor: anchor
+    });
+  } catch (err) {
+    console.error("匯出書籤失敗:", err);
+    showCustomAlert({
+      title: "匯出失敗",
+      message: `匯出書籤失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: anchor
+    });
+  }
+}
+
+async function exportCollectionsAsJson(anchor) {
+  try {
+    const collections = await fetchAllCollectionsWithItems();
+    const dateStr = new Date().toISOString().split("T")[0];
+    const jsonStr = JSON.stringify(collections, null, 2);
+
+    const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `CMS圖書館_書單備份_${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1500);
+
+    showCustomAlert({
+      title: "JSON 備份匯出成功",
+      message: `已成功匯出完整書單資料庫備份檔 (JSON)。`,
+      icon: "💾",
+      type: "success",
+      anchor: anchor
+    });
+  } catch (err) {
+    console.error("匯出備份失敗:", err);
+    showCustomAlert({
+      title: "匯出失敗",
+      message: `匯出備份失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: anchor
+    });
+  }
+}
+
+async function handleImportBookmarkFile(file, anchor) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    let importedCollections = [];
+
+    if (file.name.endsWith(".json")) {
+      const data = JSON.parse(text);
+      if (!Array.isArray(data)) throw new Error("JSON 格式不符");
+      importedCollections = data;
+    } else {
+      // HTML Netscape Bookmarks
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, "text/html");
+      const h3Elements = doc.querySelectorAll("h3");
+
+      if (h3Elements.length === 0) {
+        const links = doc.querySelectorAll("a");
+        const items = [];
+        links.forEach(a => {
+          const href = a.getAttribute("href") || "";
+          const title = a.textContent.trim();
+          const match = href.match(/work_id=([^&#]+)/);
+          if (match) {
+            items.push({ work_id: match[1], title: title });
+          }
+        });
+        if (items.length > 0) {
+          importedCollections.push({ name: "匯入的書籤", icon: "📁", items: items });
+        }
+      } else {
+        h3Elements.forEach(h3 => {
+          const folderName = h3.textContent.trim();
+          if (folderName === "CMS圖書館" && h3Elements.length > 1) return;
+
+          let nextDl = h3.nextElementSibling;
+          while (nextDl && nextDl.tagName !== "DL") {
+            nextDl = nextDl.nextElementSibling;
+          }
+
+          const items = [];
+          if (nextDl) {
+            const links = nextDl.querySelectorAll("a");
+            links.forEach(a => {
+              const href = a.getAttribute("href") || "";
+              const title = a.textContent.trim();
+              const match = href.match(/work_id=([^&#]+)/);
+              if (match) {
+                items.push({ work_id: match[1], title: title });
+              }
+            });
+          }
+
+          if (items.length > 0 || folderName) {
+            importedCollections.push({ name: folderName || "自訂書單", icon: "📁", items: items });
+          }
+        });
+      }
+    }
+
+    if (importedCollections.length === 0) {
+      showCustomAlert({
+        title: "未找到有效書單",
+        message: "在所選檔案中未找到可解析的 CMS圖書館 書籤或書籍連結。",
+        icon: "⚠️",
+        anchor: anchor
+      });
+      return;
+    }
+
+    // 寫入後端與本地
+    let totalItemsAdded = 0;
+    for (const c of importedCollections) {
+      try {
+        const colRes = await fetch(`${BASE_PATH}/api/collections`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: c.name || "匯入書單", icon: c.icon || "📚" })
+        });
+        if (colRes.ok) {
+          const colData = await colRes.json();
+          const colId = colData.collection_id;
+          for (const it of (c.items || [])) {
+            if (it.work_id && !it.work_id.startsWith("imported_")) {
+              await fetch(`${BASE_PATH}/api/collections/${colId}/items`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ work_id: it.work_id })
+              });
+              totalItemsAdded++;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("寫入書單失敗:", e);
+      }
+    }
+
+    await loadCollectionsList();
+    showCustomAlert({
+      title: "書籤匯入成功",
+      message: `成功匯入 <b>${importedCollections.length}</b> 個書單資料夾、共 <b>${totalItemsAdded}</b> 本書籍！`,
+      icon: "🎉",
+      type: "success",
+      anchor: anchor
+    });
+  } catch (err) {
+    console.error("匯入檔案失敗:", err);
+    showCustomAlert({
+      title: "匯入失敗",
+      message: `解析檔案失敗: ${err.message}`,
+      icon: "❌",
+      type: "error",
+      anchor: anchor
+    });
   }
 }
 
@@ -1586,8 +2549,13 @@ let currentActiveCategoryId = "cat_800";
 async function openBookstallModal() {
   const modal = document.getElementById("bookstallModal");
   modal.classList.add("active");
+  modal.classList.remove("in-shelf-view");
+  const backBtn = document.getElementById("bookstallBackToTreeBtn");
+  if (backBtn) backBtn.style.display = "none";
   await loadCategoryTree();
-  await loadShelfWorks(currentActiveCategoryId, "文學與小說", "📚", "文學與小說");
+  if (window.innerWidth > 768) {
+    await loadShelfWorks(currentActiveCategoryId, "文學與小說", "📚", "文學與小說");
+  }
 }
 
 function closeBookstallModal() {
@@ -1653,6 +2621,11 @@ async function handleCategoryClick(catId, name, icon, breadcrumbs) {
   const activeHeader = document.querySelector(`#node_${catId} > .tree-header`);
   if (activeHeader) activeHeader.classList.add("active");
 
+  const modal = document.getElementById("bookstallModal");
+  modal.classList.add("in-shelf-view");
+  const backBtn = document.getElementById("bookstallBackToTreeBtn");
+  if (backBtn) backBtn.style.display = "inline-block";
+
   await loadShelfWorks(catId, name, icon, breadcrumbs);
 }
 
@@ -1663,7 +2636,7 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs) {
   shelfGrid.innerHTML = `<p style="color: var(--text-muted); padding: 2rem; grid-column: 1 / -1; text-align: center;">載入書架藏書中...</p>`;
 
   try {
-    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=1&page_size=50`);
+    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=1&page_size=50&include_cloud=true`);
     if (!res.ok) return;
     const data = await res.json();
 
@@ -1677,30 +2650,142 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs) {
       return;
     }
 
-    shelfGrid.innerHTML = data.items.map(w => `
-      <div class="shelf-book-card">
-        <div>
-          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
-            ${getFormatTag(w.format)}
-            <span style="font-size: 0.8rem; color: var(--text-muted);">${w.publication_year ? `${w.publication_year}年` : ''}</span>
+    shelfGrid.innerHTML = data.items.map(w => {
+      const isLocal = (w.availability_tier === 0 && w.local_work_id) || (w.work_id && !w.availability_tier);
+      const targetWorkId = w.local_work_id || w.work_id;
+
+      let badgeHtml = "";
+      let actionsHtml = "";
+
+      if (isLocal && targetWorkId) {
+        badgeHtml = `<span class="tag tag-local" title="本地典藏已收錄">💾</span>`;
+        actionsHtml = `
+          <div class="shelf-actions">
+            <button class="btn btn-icon btn-primary" onclick="openReader('${targetWorkId}')" title="線上閱讀">
+              👁️
+            </button>
+            <div class="shelf-more-wrap">
+              <button class="btn btn-icon btn-outline shelf-more-btn" onclick="toggleShelfDropdown(this, event)" title="更多操作">
+                ⋯
+              </button>
+              <div class="shelf-dropdown-menu">
+                <button class="shelf-dropdown-item" onclick="openQuickCollection('${targetWorkId}', '${escapeHtml(w.title)}'); closeAllDropdowns();">
+                  <span>⭐</span>
+                  <span>加入個人書單</span>
+                </button>
+                <a class="shelf-dropdown-item" href="${BASE_PATH}/api/files/${targetWorkId}/raw" download title="下載原檔至本地硬碟" onclick="closeAllDropdowns();">
+                  <span>💾</span>
+                  <span>下載原檔至本機</span>
+                </a>
+                <button class="shelf-dropdown-item" onclick="openDetail('${targetWorkId}'); closeAllDropdowns();">
+                  <span>ℹ️</span>
+                  <span>書籍元資料詳情</span>
+                </button>
+              </div>
+            </div>
           </div>
-          <div style="font-weight: 700; font-size: 1rem; line-height: 1.4; color: var(--text-primary); margin-bottom: 0.35rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
-            ${escapeHtml(w.title)}
+        `;
+      } else {
+        badgeHtml = `<span class="tag tag-remote" title="公網雲端精選">🌐</span>`;
+        actionsHtml = `
+          <div class="shelf-actions">
+            <button class="btn btn-icon btn-primary" id="shelf-dl-${w.md5}" onclick="triggerSingleDownload('${w.md5}')" title="鏡像收書至本地">
+              📥
+            </button>
+            <div class="shelf-more-wrap">
+              <button class="btn btn-icon btn-outline shelf-more-btn" onclick="toggleShelfDropdown(this, event)" title="更多操作">
+                ⋯
+              </button>
+              <div class="shelf-dropdown-menu">
+                <button class="shelf-dropdown-item" onclick="previewLiveDetail('${w.md5}'); closeAllDropdowns();">
+                  <span>ℹ️</span>
+                  <span>雲端書籍元資料詳情</span>
+                </button>
+              </div>
+            </div>
           </div>
-          <div style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-            ✍️ ${escapeHtml(w.authors_display || "未知作者")}
+        `;
+      }
+
+      return `
+        <div class="shelf-book-card">
+          <div class="shelf-card-content">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; gap: 0.35rem;">
+              <div style="display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap;">
+                ${badgeHtml}
+                ${getFormatTag(w.format)}
+              </div>
+              <span style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">${w.publication_year ? `${w.publication_year}年` : ''}</span>
+            </div>
+            <div style="font-weight: 700; font-size: 0.98rem; line-height: 1.4; color: var(--text-primary); margin-bottom: 0.35rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;" title="${escapeHtml(w.title)}">
+              ${escapeHtml(w.title)}
+            </div>
+            <div style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+              ✍️ ${escapeHtml(w.authors_display || "未知作者")}
+            </div>
           </div>
+          ${actionsHtml}
         </div>
-        <div style="display: flex; gap: 0.4rem; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 0.5rem;">
-          <button class="btn btn-primary" onclick="openReader('${w.work_id}')" title="線上閱讀" style="padding: 0.35rem 0.65rem; font-size: 1rem;">📖</button>
-          <button class="btn btn-secondary" onclick="openQuickCollection('${w.work_id}', '${escapeHtml(w.title)}')" title="加入書單" style="padding: 0.35rem 0.65rem; font-size: 1rem;">⭐</button>
-          <button class="btn btn-outline" onclick="openDetail('${w.work_id}')" title="書目詳情" style="padding: 0.35rem 0.65rem; font-size: 1rem;">ℹ️</button>
-        </div>
-      </div>
-    `).join("");
+      `;
+    }).join("");
   } catch (err) {
     console.error("載入架位書籍失敗:", err);
     shelfGrid.innerHTML = `<p style="color: #ef4444; padding: 2rem; grid-column: 1 / -1;">載入失敗</p>`;
   }
 }
+
+// === 書架卡片「…」更多操作下拉選單控制 ===
+function toggleShelfDropdown(btn, event) {
+  if (event) event.stopPropagation();
+  const wrap = btn.closest(".shelf-more-wrap");
+  if (!wrap) return;
+  const menu = wrap.querySelector(".shelf-dropdown-menu");
+  if (!menu) return;
+
+  const isActive = menu.classList.contains("active");
+  closeAllDropdowns();
+
+  if (!isActive) {
+    menu.classList.add("active");
+  }
+}
+
+function closeAllShelfDropdowns() {
+  document.querySelectorAll(".shelf-dropdown-menu.active").forEach(m => m.classList.remove("active"));
+}
+
+// === 搜尋結果卡片「…」更多操作下拉選單控制 ===
+function toggleBookCardDropdown(btn, event) {
+  if (event) event.stopPropagation();
+  const wrap = btn.closest(".book-more-wrap");
+  if (!wrap) return;
+  const menu = wrap.querySelector(".book-dropdown-menu");
+  if (!menu) return;
+
+  const isActive = menu.classList.contains("active");
+  closeAllDropdowns();
+
+  if (!isActive) {
+    menu.classList.add("active");
+  }
+}
+
+function closeAllBookDropdowns() {
+  document.querySelectorAll(".book-dropdown-menu.active").forEach(m => m.classList.remove("active"));
+}
+
+function closeAllDropdowns() {
+  closeAllShelfDropdowns();
+  closeAllBookDropdowns();
+}
+
+// 全域點選或滾動時自動關閉所有卡片下拉選單
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".shelf-more-wrap") && !e.target.closest(".book-more-wrap")) {
+    closeAllDropdowns();
+  }
+});
+document.addEventListener("scroll", closeAllDropdowns, true);
+
+
 

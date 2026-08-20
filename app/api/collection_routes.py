@@ -7,7 +7,7 @@ from app.models.catalog import (
     CollectionDetailRead, CollectionItemAdd
 )
 
-router = APIRouter(prefix="/collections", tags=["Collections"])
+router = APIRouter(prefix="/api/collections", tags=["Collections"])
 
 
 def get_dao() -> CatalogDAO:

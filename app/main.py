@@ -9,6 +9,7 @@ from app.api.routes import router as api_router
 from app.api.crawler_routes import router as crawler_router
 from app.api.collection_routes import router as collection_router
 from app.api.category_routes import router as category_router
+from app.api.settings_routes import router as settings_router
 from app.storage.manager import StorageManager
 from app.db.engine import DatabaseEngine
 from app.api.crawler_routes import get_worker
@@ -46,12 +47,14 @@ app.include_router(api_router)
 app.include_router(crawler_router)
 app.include_router(collection_router)
 app.include_router(category_router)
+app.include_router(settings_router)
 
 libgen_router = APIRouter(prefix="/libgen")
 libgen_router.include_router(api_router)
 libgen_router.include_router(crawler_router)
 libgen_router.include_router(collection_router)
 libgen_router.include_router(category_router)
+libgen_router.include_router(settings_router)
 app.include_router(libgen_router)
 
 # 掛載前端靜態目錄（支援 /static 與 /libgen/static 雙重掛載）

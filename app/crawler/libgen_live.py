@@ -23,6 +23,23 @@ class LibgenCrawler:
         "routledge", "academic press", "addison-wesley", "addison wesley", "prentice hall"
     }
 
+    def __init__(self, mirrors: Optional[List[str]] = None, dao: Optional[Any] = None):
+        self._custom_mirrors = mirrors
+        self.dao = dao
+
+    @property
+    def active_mirrors(self) -> List[str]:
+        if self._custom_mirrors:
+            return self._custom_mirrors
+        if self.dao:
+            try:
+                verified_urls = self.dao.get_active_libgen_mirror_urls()
+                if verified_urls:
+                    return verified_urls
+            except Exception:
+                pass
+        return self.MIRRORS
+
     @staticmethod
     def parse_size_to_bytes(size_str: str) -> int:
         """解析如 '12.5 Mb', '800 Kb', '1.2 Gb' 為位元組數。"""
@@ -60,77 +77,83 @@ class LibgenCrawler:
             author_candidates = []
             
             for part in filtered_parts:
+                # 判斷是否像作者名（字數短、或包含逗號姓名結構）
                 words = part.split()
-                if len(words) >= 2 or any(kw in part.lower() for kw in ["system", "concept", "guide", "handbook", "principle", "introduction", "science", "programming", "java", "python", "data"]):
-                    title_candidates.append(part)
-                else:
+                if len(words) <= 3 and not any(c.isdigit() for c in part):
                     author_candidates.append(part)
+                else:
+                    title_candidates.append(part)
 
-            for title in title_candidates:
-                candidates.append(title)
-                for author in author_candidates:
-                    last_name = author.split()[-1]
-                    candidates.append(f"{last_name} {title}")
-                    candidates.append(f"{title} {last_name}")
+            if title_candidates:
+                candidates.append(" ".join(title_candidates))
+            if author_candidates and title_candidates:
+                candidates.append(f"{title_candidates[0]} {author_candidates[0]}")
 
-        # 原始查詢作為兜底
-        candidates.append(raw)
+        # 2. 去除常見副標題標點（冒號、破折號、括號）
+        sub_cleaned = re.split(r"[:\-\(\)\[\]]", raw)[0].strip()
+        if sub_cleaned and sub_cleaned != raw and len(sub_cleaned) >= 4:
+            candidates.append(sub_cleaned)
 
-        # 去重且保持順序
+        # 3. 原始字串保底
+        if raw not in candidates:
+            candidates.append(raw)
+
+        # 4. 去重但保留優先序
         seen = set()
-        unique_cands = []
+        unique_candidates = []
         for c in candidates:
-            c_clean = re.sub(r"\s+", " ", c).strip()
-            if c_clean and c_clean.lower() not in seen:
-                seen.add(c_clean.lower())
-                unique_cands.append(c_clean)
+            norm = c.lower().strip()
+            if norm and norm not in seen:
+                seen.add(norm)
+                unique_candidates.append(c)
 
-        return unique_cands
+        return unique_candidates
 
-    async def search(self, query: str, max_results: int = 25) -> List[Dict[str, Any]]:
-        """向存活鏡像發送搜尋請求，若原字串無結果則自動觸發智慧級聯分解。"""
-        if not query.strip():
+    async def search_live(self, query: str, max_results: int = 25) -> List[Dict[str, Any]]:
+        """執行智慧即時檢索：按優先級依序嘗試智慧候選詞，一旦命中即刻返回。"""
+        if not query or not query.strip():
             return []
-
-        queries_to_try = self.generate_smart_queries(query)
-        aggregated_results: Dict[str, Dict[str, Any]] = {}
-
+        smart_candidates = self.generate_smart_queries(query)
+        
         async with httpx.AsyncClient(
             headers={"User-Agent": self.USER_AGENT},
-            timeout=5.0,
+            timeout=8.0,
             verify=False,
             follow_redirects=True
         ) as client:
-            for q in queries_to_try:
-                results = await self._execute_single_search(client, q, max_results)
-                if results:
-                    for item in results:
-                        md5 = item.get("md5")
-                        if md5 and md5 not in aggregated_results:
-                            aggregated_results[md5] = item
-                    if len(aggregated_results) >= 4:
-                        break
+            # 依序執行候選詞檢索
+            for term in smart_candidates:
+                items = await self._execute_single_search(client, term, max_results)
+                if items:
+                    return items
+            
+            return []
 
-        all_items = list(aggregated_results.values())
-        raw_words = set(re.findall(r"\w+", query.lower()))
-        
-        def score_item(it: Dict[str, Any]) -> int:
-            text = f"{it.get('title', '')} {it.get('authors_display', '')} {it.get('publisher', '')}".lower()
-            return sum(1 for w in raw_words if w in text)
-
-        all_items.sort(key=score_item, reverse=True)
-        return all_items[:max_results]
+    async def search(self, query: str, max_results: int = 25) -> List[Dict[str, Any]]:
+        """向存活鏡像發送搜尋請求（相容別名）。"""
+        return await self.search_live(query, max_results)
 
     async def _execute_single_search(self, client: httpx.AsyncClient, query_term: str, max_results: int) -> List[Dict[str, Any]]:
-        """針對單一查詢詞向存活鏡像發起 HTTP 檢索。"""
+        """針對單一查詢詞向通過預檢驗證之存活鏡像發起 HTTP 檢索，支援 libgen_li 與 libgen_is 多適配器。"""
         encoded_query = urllib.parse.quote(query_term)
-        for mirror in self.MIRRORS:
-            search_url = f"{mirror}/index.php?req={encoded_query}"
+        for mirror in self.active_mirrors:
+            if "library.lol" in mirror:
+                continue
+            is_libgen_is = any(k in mirror for k in ("libgen.is", "libgen.rs", "libgen.st"))
+            if is_libgen_is:
+                search_url = f"{mirror}/search.php?req={encoded_query}&open=0&res=25&view=simple&phrase=1&column=def"
+            else:
+                search_url = f"{mirror}/index.php?req={encoded_query}"
+
             try:
                 resp = await client.get(search_url)
                 if resp.status_code == 200 and "table" in resp.text:
-                    results = self._parse_libgen_li_html(resp.text, mirror)
-                    return results
+                    if is_libgen_is:
+                        results = self._parse_libgen_is_html(resp.text, mirror)
+                    else:
+                        results = self._parse_libgen_li_html(resp.text, mirror)
+                    if results:
+                        return results
             except Exception:
                 continue
         return []

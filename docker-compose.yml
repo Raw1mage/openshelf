@@ -11,7 +11,10 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
     volumes:
+      # 程式碼與前端靜態資源即時 Bind Mount（修改即刻生效，完全免 Rebuild）
+      - ./app:/app/app
       # rawdb NAS (192.168.100.40) 永久儲存空間
       - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/raw:/data/raw
       - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/parsed:/data/parsed
       - ${OPENSHELF_NAS_DIR:-/nas/openshelf}/db:/data/db
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]

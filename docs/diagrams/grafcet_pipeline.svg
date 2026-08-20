@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="458" height="1040" viewBox="12.00 -2.00 22.86 52.00" role="img">
+<style>
+.step{fill:#fff;stroke:#111;stroke-width:.14}.step-inner{fill:none;stroke:#111;stroke-width:.08}
+.action{fill:#fff;stroke:#111;stroke-width:.14}.action-inner{fill:none;stroke:#111;stroke-width:.08}.gate{stroke:#111;stroke-width:.16}
+.edge{fill:none;stroke:#111;stroke-width:.05;stroke-linecap:round;stroke-linejoin:round}.edge-arrow{marker-end:url(#arrow)}
+.flyover-mask{stroke:#fff;stroke-width:.12;stroke-linecap:round}
+.flyover{fill:none;stroke:#111;stroke-width:.05;stroke-linecap:round}
+.junction{fill:#111;stroke:#111;stroke-width:0}.branch-junction{fill:#fff;stroke:#111;stroke-width:.08}
+.assoc{stroke:#111;stroke-width:.05}.label{font:bold .7px 'Times New Roman', 'BiauKai', 'DFKai-SB', serif;text-anchor:middle;dominant-baseline:middle}
+.action-label{font:.55px 'Times New Roman', 'BiauKai', 'DFKai-SB', serif;text-anchor:middle;dominant-baseline:middle}.gate-label{font:italic .55px 'Times New Roman', 'BiauKai', 'DFKai-SB', serif;text-anchor:start;dominant-baseline:middle}.gate-label-left{font:italic .55px 'Times New Roman', 'BiauKai', 'DFKai-SB', serif;text-anchor:end;dominant-baseline:middle}
+</style>
+<defs><marker id="arrow" markerWidth="0.4" markerHeight="0.4" refX="0.36" refY="0.2" orient="auto" markerUnits="userSpaceOnUse"><path d="M 0 0 L 0.4 0.2 L 0 0.4 z" fill="#111"/></marker></defs>
+<rect x="12.00" y="-2.00" width="22.86" height="52.00" fill="white"/>
+<path class="edge edge-arrow" data-edge-id="edge:S1O1S2I1" data-segment-ids="S1O1S2I1:1S" d="M 20.00 7.00 L 20.00 11.00"/>
+<path class="edge edge-arrow" data-edge-id="edge:S2O1S3I1" data-segment-ids="S2O1S3I1:1S" d="M 20.00 14.00 L 20.00 18.00"/>
+<path class="edge edge-arrow" data-edge-id="edge:S3O1S4I1" data-segment-ids="S3O1S4I1:1S" d="M 20.00 21.00 L 20.00 25.00"/>
+<path class="edge edge-arrow" data-edge-id="edge:S4O1S5I1" data-segment-ids="S4O1S5I1:1S" d="M 20.00 28.00 L 20.00 32.00"/>
+<path class="edge edge-arrow" data-edge-id="edge:S5O1S6I1" data-segment-ids="S5O1S6I1:1S" d="M 20.00 35.00 L 20.00 39.00"/>
+<path class="edge edge-arrow" data-edge-id="edge:S6O1S1I1" data-segment-ids="S6O1S1I1:1S S6O1S1I1:2W S6O1S1I1:3N S6O1S1I1:4E S6O1S1I1:5S" d="M 20.00 42.00 L 20.00 45.50 Q 20.00 46.00 19.50 46.00 L 16.50 46.00 Q 16.00 46.00 16.00 45.50 L 16.00 2.50 Q 16.00 2.00 16.50 2.00 L 19.50 2.00 Q 20.00 2.00 20.00 2.50 L 20.00 4.00"/>
+<rect class="step" x="18.00" y="4.00" width="4.00" height="3.00" rx="0.35" ry="0.35"/>
+<rect class="step-inner" x="18.25" y="4.25" width="3.50" height="2.50" rx="0.22" ry="0.22"/>
+<text class="label" x="20.00" y="5.50">1</text>
+<rect class="step" x="18.00" y="11.00" width="4.00" height="3.00" rx="0.35" ry="0.35"/>
+<text class="label" x="20.00" y="12.50">2</text>
+<rect class="step" x="18.00" y="18.00" width="4.00" height="3.00" rx="0.35" ry="0.35"/>
+<text class="label" x="20.00" y="19.50">3</text>
+<rect class="step" x="18.00" y="25.00" width="4.00" height="3.00" rx="0.35" ry="0.35"/>
+<text class="label" x="20.00" y="26.50">4</text>
+<rect class="step" x="18.00" y="32.00" width="4.00" height="3.00" rx="0.35" ry="0.35"/>
+<text class="label" x="20.00" y="33.50">5</text>
+<rect class="step" x="18.00" y="39.00" width="4.00" height="3.00" rx="0.35" ry="0.35"/>
+<text class="label" x="20.00" y="40.50">6</text>
+<line class="assoc" x1="22.00" y1="5.50" x2="23.00" y2="5.50"/>
+<rect class="action" x="23.00" y="4.07" width="7.86" height="2.86"/>
+<text class="action-label" x="26.93" y="5.09"><tspan x="26.93" dy="0">系統待機：監聽圖</tspan><tspan x="26.93" dy="0.82">書搜尋或上傳請求</tspan></text>
+<line class="assoc" x1="22.00" y1="12.50" x2="23.00" y2="12.50"/>
+<rect class="action" x="23.00" y="11.07" width="7.86" height="2.86"/>
+<text class="action-label" x="26.93" y="12.09"><tspan x="26.93" dy="0">並行檢索：本地 FTS5</tspan><tspan x="26.93" dy="0.82">庫與 Libgen 啟用鏡像群</tspan></text>
+<line class="assoc" x1="22.00" y1="19.50" x2="23.00" y2="19.50"/>
+<rect class="action" x="23.00" y="18.07" width="7.86" height="2.86"/>
+<text class="action-label" x="26.93" y="18.68"><tspan x="26.93" dy="0">書目展示：呈現</tspan><tspan x="26.93" dy="0.82">純圖示動作列與</tspan><tspan x="26.93" dy="0.82">線上/本地狀態指標</tspan></text>
+<line class="assoc" x1="22.00" y1="26.50" x2="23.00" y2="26.50"/>
+<rect class="action" x="23.00" y="25.07" width="7.86" height="2.86"/>
+<text class="action-label" x="26.93" y="25.68"><tspan x="26.93" dy="0">非同步排程：探</tspan><tspan x="26.93" dy="0.82">測直鏈 Gateway 並</tspan><tspan x="26.93" dy="0.82">啟動斷點續傳下載</tspan></text>
+<line class="assoc" x1="22.00" y1="33.50" x2="23.00" y2="33.50"/>
+<rect class="action" x="23.00" y="32.07" width="7.86" height="2.86"/>
+<text class="action-label" x="26.93" y="32.68"><tspan x="26.93" dy="0">內容抽取：PyMuPDF</tspan><tspan x="26.93" dy="0.82">抽取文本並更新</tspan><tspan x="26.93" dy="0.82">SQLite FTS5 索引</tspan></text>
+<line class="assoc" x1="22.00" y1="40.50" x2="23.00" y2="40.50"/>
+<rect class="action" x="23.00" y="39.07" width="7.86" height="2.86"/>
+<text class="action-label" x="26.93" y="39.68"><tspan x="26.93" dy="0">書庫落地：標記「💾 本</tspan><tspan x="26.93" dy="0.82">地可讀」並支援 1-Tap</tspan><tspan x="26.93" dy="0.82">沉浸式閱覽與書單匯出</tspan></text>
+<line class="gate" x1="19.00" y1="9.00" x2="21.00" y2="9.00" data-label-kind="condition-stub" data-edge-id="edge:S1O1S2I1" data-arrow-id="condition_stub:T1" data-transition-id="T1" data-condition-stub-id="condition_stub:T1"/>
+<text class="gate-label" x="21.40" y="9.00" data-label-kind="condition-stub" data-edge-id="edge:S1O1S2I1" data-arrow-id="condition_stub:T1" data-transition-id="T1" data-condition-stub-id="condition_stub:T1"><tspan x="21.40" dy="0">收到查詢關鍵字/ISBN</tspan></text>
+<line class="gate" x1="19.00" y1="16.00" x2="21.00" y2="16.00" data-label-kind="condition-stub" data-edge-id="edge:S2O1S3I1" data-arrow-id="condition_stub:T2" data-transition-id="T2" data-condition-stub-id="condition_stub:T2"/>
+<text class="gate-label" x="21.40" y="16.00" data-label-kind="condition-stub" data-edge-id="edge:S2O1S3I1" data-arrow-id="condition_stub:T2" data-transition-id="T2" data-condition-stub-id="condition_stub:T2"><tspan x="21.40" dy="0">檢索完成，彙整去重展示</tspan></text>
+<line class="gate" x1="19.00" y1="23.00" x2="21.00" y2="23.00" data-label-kind="condition-stub" data-edge-id="edge:S3O1S4I1" data-arrow-id="condition_stub:T3" data-transition-id="T3" data-condition-stub-id="condition_stub:T3"/>
+<text class="gate-label" x="21.40" y="23.00" data-label-kind="condition-stub" data-edge-id="edge:S3O1S4I1" data-arrow-id="condition_stub:T3" data-transition-id="T3" data-condition-stub-id="condition_stub:T3"><tspan x="21.40" dy="0">使用者點擊「📥 一鍵下載收書」</tspan></text>
+<line class="gate" x1="19.00" y1="30.00" x2="21.00" y2="30.00" data-label-kind="condition-stub" data-edge-id="edge:S4O1S5I1" data-arrow-id="condition_stub:T4" data-transition-id="T4" data-condition-stub-id="condition_stub:T4"/>
+<text class="gate-label" x="21.40" y="30.00" data-label-kind="condition-stub" data-edge-id="edge:S4O1S5I1" data-arrow-id="condition_stub:T4" data-transition-id="T4" data-condition-stub-id="condition_stub:T4"><tspan x="21.40" dy="0">原檔下載完成並校驗 MD5/SHA256 成功</tspan></text>
+<line class="gate" x1="19.00" y1="37.00" x2="21.00" y2="37.00" data-label-kind="condition-stub" data-edge-id="edge:S5O1S6I1" data-arrow-id="condition_stub:T5" data-transition-id="T5" data-condition-stub-id="condition_stub:T5"/>
+<text class="gate-label" x="21.40" y="37.00" data-label-kind="condition-stub" data-edge-id="edge:S5O1S6I1" data-arrow-id="condition_stub:T5" data-transition-id="T5" data-condition-stub-id="condition_stub:T5"><tspan x="21.40" dy="0">索引更新與分類關聯建立完畢</tspan></text>
+<line class="gate" x1="19.00" y1="44.00" x2="21.00" y2="44.00" data-label-kind="condition-stub" data-edge-id="edge:S6O1S1I1" data-arrow-id="condition_stub:T6" data-transition-id="T6" data-condition-stub-id="condition_stub:T6"/>
+<text class="gate-label" x="21.40" y="44.00" data-label-kind="condition-stub" data-edge-id="edge:S6O1S1I1" data-arrow-id="condition_stub:T6" data-transition-id="T6" data-condition-stub-id="condition_stub:T6"><tspan x="21.40" dy="0">完成收書作業，返回待機</tspan></text>
+</svg>

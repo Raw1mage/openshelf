@@ -60,9 +60,19 @@
 - Phase 5: 個人化書單與收藏庫 (Personal Booklists & Custom Collections)
   - 自訂書單資料結構（`collection`, `collection_item`）與完整 CRUD DAO/API
   - 前端純圖示快速收藏按鈕（`⭐` / `🔖`）、書單管理抽屜與獨立書單檢視
+  - Chrome 擴充套件原生書籤同步橋樑（Local-First，零伺服器負擔）
 - Phase 6: 多階層樹狀分類與線上書攤 (Multi-Level Tree Categories & Bookstall Shelf Browsing)
   - 多階層分類結構（`category`, `work_category`）與中繼資料自動分類對應
   - 線上書攤（Bookstall / Shelf View）前端視覺化介面，支援樹狀節點展開折疊、層級導航與瀑布流/書架排版自由瀏覽各架位藏書
+- Phase 7: 線上書攤漸進式雲端探索 (On-Demand Category Cloud Discovery & Hybrid Shelf)
+  - 捨棄暴力窮舉，採用「有觸及再展開」之懶加載探測機制
+  - 點擊架位時動態向 Libgen 公網探測該領域經典熱門書目並快取
+  - 混合書架體驗：已落地標記 `💾 本地`（直讀 `📖`），雲端標記 `🌐 公網`（一鍵收書 `📥`）
+- Phase 8: 手機行動端 RWD 全版獨立頁深度重構 (Mobile-First Full-Screen Refactoring)
+  - 手機螢幕（< 768px）所有 Modal 浮窗全面轉換為全版獨立頁面（100vw × 100dvh）
+  - 統一提供「⬅️ 返回上一頁」按鈕，解決多層巢狀框架與滾動條問題
+  - 書攤與書單採用「兩階段下鑽（Two-Stage Drill-Down）」架構，手機端流暢切換列表與架位內容
+  - 解決窄螢幕爆框、擠塞與換行問題，過濾標籤列支援原生橫向平滑滾動
 
 ### OUT
 

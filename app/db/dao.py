@@ -13,6 +13,91 @@ from app.models.catalog import (
 from app.db.categories import DEFAULT_CATEGORY_TREE, infer_categories_for_work
 
 
+DEFAULT_LIBGEN_MIRRORS: List[Dict[str, Any]] = [
+    {
+        "url": "https://libgen.li",
+        "enabled": True,
+        "note": "Libgen.li 系列主要節點",
+        "is_default": True,
+        "priority": 1,
+        "validation_status": "verified",
+        "adapter_type": "libgen_li"
+    },
+    {
+        "url": "https://libgen.la",
+        "enabled": True,
+        "note": "Libgen.li 系列分流節點",
+        "is_default": True,
+        "priority": 2,
+        "validation_status": "verified",
+        "adapter_type": "libgen_li"
+    },
+    {
+        "url": "https://libgen.rocks",
+        "enabled": True,
+        "note": "Libgen.li 系列備用節點",
+        "is_default": True,
+        "priority": 3,
+        "validation_status": "verified",
+        "adapter_type": "libgen_li"
+    },
+    {
+        "url": "https://libgen.gs",
+        "enabled": True,
+        "note": "Libgen.li 系列分流節點",
+        "is_default": True,
+        "priority": 4,
+        "validation_status": "verified",
+        "adapter_type": "libgen_li"
+    },
+    {
+        "url": "https://libgen.pm",
+        "enabled": True,
+        "note": "Libgen.pm 系列分流節點",
+        "is_default": True,
+        "priority": 5,
+        "validation_status": "verified",
+        "adapter_type": "libgen_li"
+    },
+    {
+        "url": "https://libgen.is",
+        "enabled": True,
+        "note": "Libgen.is 傳統經典鏡像",
+        "is_default": True,
+        "priority": 6,
+        "validation_status": "verified",
+        "adapter_type": "libgen_is"
+    },
+    {
+        "url": "https://libgen.rs",
+        "enabled": True,
+        "note": "Libgen.rs 官方鏡像",
+        "is_default": True,
+        "priority": 7,
+        "validation_status": "verified",
+        "adapter_type": "libgen_is"
+    },
+    {
+        "url": "https://libgen.st",
+        "enabled": True,
+        "note": "Libgen.st 官方鏡像",
+        "is_default": True,
+        "priority": 8,
+        "validation_status": "verified",
+        "adapter_type": "libgen_is"
+    },
+    {
+        "url": "http://library.lol",
+        "enabled": True,
+        "note": "Library.lol 直鏈下載 Gateway",
+        "is_default": True,
+        "priority": 9,
+        "validation_status": "verified",
+        "adapter_type": "direct_gateway"
+    }
+]
+
+
 class CatalogDAO:
     """封裝 SQLite 資料存取邏輯。"""
 
@@ -558,4 +643,79 @@ class CatalogDAO:
                 for r in rows
             ]
             return total, items
+
+    # === 系統設定與自訂 Libgen 鏡像管理 (System Settings & Custom Libgen Mirrors) ===
+
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """讀取系統設定值。"""
+        with self.engine.session() as conn:
+            row = conn.execute("SELECT value FROM system_setting WHERE key = ?", (key,)).fetchone()
+            if row:
+                return row["value"]
+            return default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """寫入或更新系統設定值。"""
+        now = self.current_iso()
+        with self.engine.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO system_setting (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, now)
+            )
+
+    def get_libgen_mirrors(self) -> List[Dict[str, Any]]:
+        """讀取已設定之 Libgen 鏡像清單（若未設定則回傳預設清單）。"""
+        raw = self.get_setting("libgen_mirrors")
+        if not raw:
+            return [dict(m) for m in DEFAULT_LIBGEN_MIRRORS]
+        try:
+            import json
+            data = json.loads(raw)
+            if isinstance(data, list) and len(data) > 0:
+                return data
+        except Exception:
+            pass
+        return [dict(m) for m in DEFAULT_LIBGEN_MIRRORS]
+
+    def save_libgen_mirrors(self, mirrors: List[Dict[str, Any]]) -> None:
+        """保存 Libgen 鏡像清單。"""
+        import json
+        self.set_setting("libgen_mirrors", json.dumps(mirrors, ensure_ascii=False))
+
+    def reset_libgen_mirrors(self) -> List[Dict[str, Any]]:
+        """重設回預設 Libgen 鏡像清單。"""
+        import json
+        defaults = [dict(m) for m in DEFAULT_LIBGEN_MIRRORS]
+        self.set_setting("libgen_mirrors", json.dumps(defaults, ensure_ascii=False))
+        return defaults
+
+    def get_active_libgen_mirror_urls(self, adapter_types: Optional[List[str]] = None) -> List[str]:
+        """
+        取得「已啟用」且「通過預檢驗證 (verified)」的有效鏡像 URL 陣列，供爬蟲與下載解析器正式呼叫。
+        未經驗證或解析不相容 (incompatible_layout) 者將被隔離阻擋。
+        """
+        mirrors = self.get_libgen_mirrors()
+        active = []
+        for m in sorted(mirrors, key=lambda x: x.get("priority", 999)):
+            if not m.get("enabled", True):
+                continue
+            # 只有驗證通過者可正式參與
+            status = m.get("validation_status", "unverified")
+            if status != "verified":
+                continue
+            if adapter_types and m.get("adapter_type") not in adapter_types:
+                continue
+            url = m.get("url", "").rstrip("/")
+            if url:
+                active.append(url)
+
+        if not active:
+            # 安全防線：若無任何通過驗證之自訂鏡像，回傳預設啟用鏡像
+            active = [m["url"].rstrip("/") for m in DEFAULT_LIBGEN_MIRRORS if m.get("enabled", True)]
+        return active
+
 

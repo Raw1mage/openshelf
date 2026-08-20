@@ -169,3 +169,42 @@ class CategoryWorksResponse(BaseModel):
     page: int
     page_size: int
     items: List[SearchResultItem]
+
+
+# === 自訂 Libgen 來源、鏡像驗證與 BR 發送 (Custom Libgen Mirrors & Pre-flight Validation) ===
+class LibgenMirrorItem(BaseModel):
+    url: str
+    enabled: bool = True
+    note: Optional[str] = ""
+    is_default: bool = False
+    priority: int = 0
+    validation_status: Literal["verified", "unverified", "offline", "incompatible_layout"] = "unverified"
+    adapter_type: Optional[str] = "unknown"  # 'libgen_li', 'libgen_is', 'direct_gateway', 'unknown'
+    last_validated_at: Optional[str] = None
+    latency_ms: Optional[float] = None
+    sample_records_count: Optional[int] = 0
+    br_id: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class LibgenMirrorsUpdateRequest(BaseModel):
+    mirrors: List[LibgenMirrorItem]
+
+
+class LibgenMirrorValidateRequest(BaseModel):
+    url: str
+    auto_dispatch_br: bool = True
+
+
+class LibgenMirrorValidationReport(BaseModel):
+    url: str
+    is_online: bool
+    status_code: Optional[int] = None
+    latency_ms: Optional[float] = None
+    validation_status: Literal["verified", "unverified", "offline", "incompatible_layout"]
+    adapter_type: str
+    sample_records_count: int = 0
+    error_message: Optional[str] = None
+    br_id: Optional[str] = None
+    br_path: Optional[str] = None
+    dispatched_br: bool = False

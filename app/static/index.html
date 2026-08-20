@@ -2,14 +2,14 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>CMS圖書館</title>
   <script>
     const baseEl = document.createElement('base');
     baseEl.href = window.location.pathname.startsWith('/libgen') ? '/libgen/' : '/';
     document.head.appendChild(baseEl);
   </script>
-  <link rel="stylesheet" href="static/css/style.css">
+  <link rel="stylesheet" href="static/css/style.css?v=20260820_v12">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📚</text></svg>">
 </head>
 <body>
@@ -20,17 +20,17 @@
       <span class="logo-text">CMS圖書館</span>
     </a>
     <div class="header-actions">
-      <button class="btn btn-secondary" id="openSettingsBtn" title="系統設定" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">⚙️</button>
-      <button class="btn btn-secondary" id="openBookstallBtn" title="逛線上書攤 / 分類導航" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">🏪</button>
-      <button class="btn btn-secondary" id="openCollectionsBtn" title="我的個人書單" style="padding: 0.45rem 0.8rem; font-size: 1.15rem;">📚</button>
-      <button class="btn btn-secondary queue-header-btn" id="openQueueBtn" title="收書佇列" style="padding: 0.45rem 0.8rem; font-size: 1.1rem; display: inline-flex; align-items: center; gap: 0.35rem;">
+      <button class="btn btn-icon btn-secondary" id="openSettingsBtn" title="系統設定">⚙️</button>
+      <button class="btn btn-icon btn-secondary" id="openBookstallBtn" title="逛線上書攤 / 分類導航">🏪</button>
+      <button class="btn btn-icon btn-secondary" id="openCollectionsBtn" title="我的個人書單">📚</button>
+      <button class="btn btn-secondary queue-header-btn" id="openQueueBtn" title="收書佇列">
         <span class="queue-icon" id="queueIcon">📥</span>
-        <span id="queueBadge" style="font-size: 0.95rem; font-weight: 700; background: var(--accent); color: #000; border-radius: 12px; padding: 0.1rem 0.45rem; line-height: 1;"><script>document.write(localStorage.getItem('cms_queue_count') || '0');</script></span>
+        <span id="queueBadge"><script>document.write(localStorage.getItem('cms_queue_count') || '0');</script></span>
         <div class="queue-mini-bar" id="queueMiniBar" style="display: none;">
           <div class="queue-mini-progress" id="queueMiniProgress" style="width: 0%;"></div>
         </div>
       </button>
-      <button class="btn btn-primary" id="openUploadBtn" title="手動上傳書籍" style="padding: 0.45rem 0.85rem; font-size: 1.15rem;">➕</button>
+      <button class="btn btn-icon btn-primary" id="openUploadBtn" title="手動上傳書籍">➕</button>
     </div>
   </header>
 
@@ -38,7 +38,7 @@
     <section class="hero-section">
       <div class="search-box-wrapper">
         <input type="text" id="searchInput" class="search-input" placeholder="輸入書名、作者、ISBN、DOI、MD5、引文或內文關鍵字..." autofocus>
-        <button class="btn btn-primary" id="searchBtn" title="搜尋全庫" style="padding: 0.65rem 1.35rem; font-size: 1.15rem;">🔍</button>
+        <button class="btn btn-primary" id="searchBtn" title="搜尋全庫">🔍</button>
       </div>
 
       <div class="filter-bar" id="filterBar">
@@ -87,7 +87,10 @@
   <div class="modal-backdrop" id="queueModal">
     <div class="modal-card resizable-card" id="queueModalCard">
       <div class="modal-header draggable-header" id="queueModalHeader" style="align-items: center;">
-        <h2 style="font-size: 1.25rem; margin: 0;">📥 收書佇列</h2>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="mobile-back-btn" id="queueMobileBackBtn" title="返回">&larr;</button>
+          <h2 style="font-size: 1.25rem; margin: 0;">📥 收書佇列</h2>
+        </div>
         <div style="display: flex; gap: 0.4rem; align-items: center;">
           <button class="btn btn-icon btn-secondary" id="clearCompletedBtn" title="清理所有已完成項目" style="padding: 0.4rem 0.65rem; font-size: 1.05rem; line-height: 1;">🧹</button>
           <button class="btn btn-icon btn-outline" id="minimizeQueueBtn" title="縮小至背景（不會中斷下載）" style="padding: 0.4rem 0.65rem; font-size: 1.05rem; line-height: 1;">➖</button>
@@ -101,10 +104,13 @@
 
   <!-- 上傳入庫 Modal -->
   <div class="modal-backdrop" id="uploadModal">
-    <div class="modal-card">
+    <div class="modal-card modal-card-md">
       <div class="modal-header">
-        <h2 style="font-size: 1.25rem;">上傳書籍檔案入庫</h2>
-        <button class="close-btn" id="closeUploadBtn">&times;</button>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="mobile-back-btn" id="uploadMobileBackBtn" title="返回">&larr;</button>
+          <h2 style="font-size: 1.25rem;">上傳書籍檔案入庫</h2>
+        </div>
+        <button class="close-btn" id="closeUploadBtn" title="關閉">&times;</button>
       </div>
       <form id="uploadForm">
         <div class="form-group">
@@ -129,9 +135,12 @@
 
   <!-- 書目詳情 Modal -->
   <div class="modal-backdrop" id="detailModal">
-    <div class="modal-card">
+    <div class="modal-card modal-card-lg">
       <div class="modal-header">
-        <h2 style="font-size: 1.25rem;">書籍元資料詳情</h2>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="mobile-back-btn" id="detailMobileBackBtn" title="返回">&larr;</button>
+          <h2 style="font-size: 1.25rem;">書籍元資料詳情</h2>
+        </div>
         <button class="close-btn" id="closeDetailBtn" title="關閉">&times;</button>
       </div>
       <div id="detailModalContent">
@@ -142,11 +151,14 @@
 
   <!-- 系統設定 Modal -->
   <div class="modal-backdrop" id="settingsModal">
-    <div class="modal-card" style="max-width: 580px;">
+    <div class="modal-card modal-card-md">
       <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-        <h2 style="font-size: 1.25rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
-          <span>⚙️</span> 系統設定
-        </h2>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="mobile-back-btn" id="settingsMobileBackBtn" title="返回">&larr;</button>
+          <h2 style="font-size: 1.25rem; display: flex; align-items: center; gap: 0.4rem; margin: 0;">
+            <span>⚙️</span> 系統設定
+          </h2>
+        </div>
         <button class="close-btn" id="closeSettingsBtn" title="關閉">&times;</button>
       </div>
       <div style="display: flex; flex-direction: column; gap: 1.25rem; margin-top: 1rem;">
@@ -178,24 +190,69 @@
           </div>
         </div>
 
-        <!-- 項目 2: Chrome 擴充套件 -->
+        <!-- 項目 2: 個人書單可攜與跨裝置同步 (Portable Bookmarks & Backup) -->
         <div style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 1rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
             <h3 style="font-size: 1rem; color: var(--accent); display: flex; align-items: center; gap: 0.35rem; margin: 0;">
-              <span>🌐</span> Chrome 原生書籤同步擴充套件
+              <span>📦</span> 個人書單跨裝置可攜與備份
             </h3>
-            <span id="extStatusBadgeSettings" class="tag" style="background: rgba(148, 163, 184, 0.15); color: var(--text-muted);">未連線</span>
+            <span class="tag tag-local">Local-First</span>
           </div>
           <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 0.75rem;">
-            安裝擴充套件後，個人書單將自動雙向同步至 Chrome「CMS圖書館」書籤資料夾，達成零伺服器負擔的個人化跨裝置同步。
+            書單預設完整保存在本機瀏覽器（零伺服器負擔）。您可以隨時匯出為標準 Netscape 書籤檔，存放在 Google Drive、OneDrive 或直接匯入 Chrome / Safari「我的最愛」。
           </p>
-          <a href="static/extension.zip" download class="btn btn-primary" title="下載 Chrome 擴充套件 (.zip)" style="display: inline-flex; align-items: center; gap: 0.35rem; text-decoration: none; padding: 0.5rem 1rem; font-size: 0.9rem;">
-            📥 下載 Chrome 擴充套件 (.zip)
-          </a>
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.75rem; line-height: 1.6; background: var(--bg-secondary); padding: 0.6rem; border-radius: 6px;">
-            1. 下載並解壓縮 <code>extension.zip</code><br>
-            2. 在 Chrome 開啟 <code>chrome://extensions</code> 並開啟右上角「開發人員模式」<br>
-            3. 點選「載入未打包項目」，選取解壓縮後的資料夾即完成！
+          <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <button class="btn btn-secondary" id="settingsExportHtmlBtn" title="匯出為 Chrome / Safari 書籤檔 (.html)" style="display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.45rem 0.85rem; font-size: 0.85rem;">
+              💾 匯出書籤檔 (.html)
+            </button>
+            <button class="btn btn-secondary" id="settingsExportJsonBtn" title="匯出完整書單備份 (.json)" style="display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.45rem 0.85rem; font-size: 0.85rem;">
+              📦 完整備份 (.json)
+            </button>
+            <button class="btn btn-secondary" id="settingsImportBtn" title="匯入書籤檔或備份" style="display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.45rem 0.85rem; font-size: 0.85rem;">
+              📂 匯入書籤 / 備份
+            </button>
+          </div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.6; background: var(--bg-secondary); padding: 0.6rem; border-radius: 6px;">
+            💡 匯出的 <code>.html</code> 檔案為全球通用 Netscape Bookmark 規範，可在任何瀏覽器（Chrome, Edge, Safari, Firefox）點選「書籤 ➔ 匯入書籤」，自動還原完整分類樹與書籍超連結。
+          </div>
+        </div>
+
+        <!-- 項目 3: 自訂 Libgen 來源與鏡像線路管理 (Custom Libgen Mirrors & Pre-flight Validation) -->
+        <div style="background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+            <h3 style="font-size: 1rem; color: var(--accent); display: flex; align-items: center; gap: 0.35rem; margin: 0;">
+              <span>🌐</span> 自訂 Libgen 來源與鏡像管理
+            </h3>
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              <button class="btn btn-secondary" id="validateAllMirrorsBtn" title="對所有鏡像執行預檢驗證與測速" style="padding: 0.3rem 0.65rem; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.3rem;">
+                ⚡ 全部預檢驗證
+              </button>
+              <button class="btn btn-secondary" id="resetMirrorsBtn" title="恢復原廠預設鏡像清單" style="padding: 0.3rem 0.65rem; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.3rem;">
+                🔄 恢復預設
+              </button>
+            </div>
+          </div>
+          <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 0.75rem;">
+            所有來源更新後<b>必須通過預檢驗證（測試連線與結構適配）</b>才能正式參與檢索與下載。若來源在線但結構無法解析，系統將<b>自動發送 BR 報告</b>至 Repository 並隔離保護。
+          </p>
+
+          <!-- 新增自訂來源欄位 -->
+          <div style="display: flex; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap;">
+            <input type="text" id="newMirrorUrlInput" class="form-input" placeholder="輸入 Libgen 網址 (如 https://libgen.is 或自建節點)..." style="flex: 1; min-width: 220px; padding: 0.45rem 0.75rem; font-size: 0.85rem;">
+            <input type="text" id="newMirrorNoteInput" class="form-input" placeholder="備註 (選填)" style="width: 130px; padding: 0.45rem 0.75rem; font-size: 0.85rem;">
+            <button class="btn btn-primary" id="addMirrorBtn" style="padding: 0.45rem 0.85rem; font-size: 0.85rem; white-space: nowrap; display: inline-flex; align-items: center; gap: 0.3rem;">
+              ➕ 新增並驗證
+            </button>
+          </div>
+
+          <!-- 鏡像清單容器 -->
+          <div id="mirrorsListContainer" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 320px; overflow-y: auto; padding-right: 0.25rem;">
+            <p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 1rem;">載入鏡像設定中...</p>
+          </div>
+          
+          <!-- 自動發送的 BR 報告資訊提示列 -->
+          <div id="dispatchedIssuesNotice" style="display: none; margin-top: 0.75rem; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; padding: 0.6rem 0.8rem; font-size: 0.8rem; color: #fca5a5;">
+            <!-- JS 動態插入 BR 提示 -->
           </div>
         </div>
 
@@ -205,19 +262,25 @@
 
   <!-- 個人書單 Modal -->
   <div class="modal-backdrop" id="collectionsModal">
-    <div class="modal-card" style="max-width: 900px; width: 95vw; height: 85vh; display: flex; flex-direction: column;">
+    <div class="modal-card modal-card-lg">
       <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-        <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button class="mobile-back-btn" id="collectionsMobileBackBtn" title="返回">&larr;</button>
           <span style="font-size: 1.5rem;">📚</span>
           <div>
             <h2 style="font-size: 1.25rem;">個人書單收藏庫</h2>
             <div id="extStatusBadge" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.15rem;">
-              <span>⚪ 本地模式 • 可在「⚙️ 設定」中下載 Chrome 擴充套件啟用原生同步</span>
+              <span>💾 本地無感儲存 • 支援隨時匯出為標準 Chrome/Safari 書籤檔或雲端備份</span>
             </div>
           </div>
         </div>
-        <div style="display: flex; align-items: center; gap: 0.5rem;">
-          <button class="btn btn-primary" id="newCollectionBtn" title="新建書單" style="padding: 0.35rem 0.75rem; font-size: 1.1rem;">➕</button>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="btn btn-icon btn-secondary" id="exportCollectionsBtn" title="匯出書籤檔 (.html)">💾</button>
+          <button class="btn btn-icon btn-secondary" id="importCollectionsBtn" title="匯入書籤檔 / 還原備份">📂</button>
+          <input type="file" id="bookmarkFileInput" accept=".html,.htm,.json" style="display: none;">
+          <div style="width: 1px; height: 20px; background: var(--border); margin: 0 0.2rem;"></div>
+          <button class="btn btn-icon btn-secondary" id="newCollectionBtn" title="新建書單">➕</button>
+          <div style="width: 1px; height: 20px; background: var(--border); margin: 0 0.2rem;"></div>
           <button class="close-btn" id="closeCollectionsBtn" title="關閉">&times;</button>
         </div>
       </div>
@@ -236,9 +299,12 @@
 
   <!-- 快速加入書單 Popover Modal -->
   <div class="modal-backdrop" id="quickCollectionModal">
-    <div class="modal-card" style="max-width: 380px;">
+    <div class="modal-card modal-card-sm">
       <div class="modal-header">
-        <h3 style="font-size: 1.1rem; display: flex; align-items: center; gap: 0.35rem;">⭐ 加入自訂書單</h3>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button class="mobile-back-btn" id="quickMobileBackBtn" title="返回">&larr;</button>
+          <h3 style="font-size: 1.1rem; display: flex; align-items: center; gap: 0.35rem;">⭐ 加入自訂書單</h3>
+        </div>
         <button class="close-btn" id="closeQuickCollectionBtn" title="關閉">&times;</button>
       </div>
       <div id="quickCollectionList" style="margin: 1rem 0; max-height: 250px; overflow-y: auto;">
@@ -252,9 +318,10 @@
 
   <!-- 逛線上書攤 / 多階層樹狀分類 Modal -->
   <div class="modal-backdrop" id="bookstallModal">
-    <div class="modal-card" style="max-width: 1100px; width: 95vw; height: 90vh; display: flex; flex-direction: column;">
+    <div class="modal-card modal-card-xl">
       <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-        <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button class="mobile-back-btn" id="bookstallMobileBackBtn" title="返回">&larr;</button>
           <span style="font-size: 1.6rem;">🏪</span>
           <div>
             <h2 style="font-size: 1.25rem;">線上書攤 · 圖書館各架藏書漫遊</h2>
@@ -274,7 +341,10 @@
         <!-- 右側沉浸式書架展示區 -->
         <div class="shelf-content-area" id="shelfContentArea" style="flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding-left: 0.5rem;">
           <div class="shelf-header" id="shelfHeader" style="margin-bottom: 1rem;">
-            <div class="shelf-breadcrumbs" id="shelfBreadcrumbs" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.35rem;">文學與小說</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+              <div class="shelf-breadcrumbs" id="shelfBreadcrumbs" style="font-size: 0.85rem; color: var(--text-muted);">文學與小說</div>
+              <button class="btn btn-secondary mobile-back-to-tree" id="bookstallBackToTreeBtn" title="返回分類列表" style="padding: 0.25rem 0.65rem; font-size: 0.82rem; display: none;">⬅️ 返回分類列表</button>
+            </div>
             <h3 id="shelfTitle" style="font-size: 1.4rem; display: flex; align-items: center; gap: 0.5rem;">📚 正在載入書架...</h3>
           </div>
           <div class="shelf-grid" id="shelfGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
@@ -289,6 +359,7 @@
     <p>Thesmart AI copyright 2026</p>
   </footer>
 
-  <script src="static/js/app.js"></script>
+  <script src="static/js/modal-dialog.js"></script>
+  <script src="static/js/app.js?v=20260820_v12"></script>
 </body>
 </html>

@@ -39,3 +39,11 @@ def test_category_tree_and_works(dao):
     total_comic, works_comic = dao.get_category_works("cat_090")
     assert total_comic >= 1
     assert any(w.work_id == w_tintin for w in works_comic)
+
+
+def test_category_cloud_queries():
+    from app.db.categories import CATEGORY_CLOUD_SEARCH_QUERIES
+    assert "cat_800" in CATEGORY_CLOUD_SEARCH_QUERIES
+    assert "cat_471" in CATEGORY_CLOUD_SEARCH_QUERIES
+    assert "cat_090" in CATEGORY_CLOUD_SEARCH_QUERIES
+    assert "python" in CATEGORY_CLOUD_SEARCH_QUERIES["cat_471"]

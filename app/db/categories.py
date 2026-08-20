@@ -120,6 +120,53 @@ CATEGORY_KEYWORDS = {
     "cat_610": ["歷史", "帝國", "戰爭", "古代", "羅馬", "三國", "朝代", "史記", "文明"]
 }
 
+# 線上書攤漸進式雲端探測查詢詞
+CATEGORY_CLOUD_SEARCH_QUERIES = {
+    # 文學與小說
+    "cat_800": "fiction novel",
+    "cat_880": "fantasy magic",
+    "cat_885": "science fiction",
+    "cat_890": "mystery detective",
+    "cat_850": "chinese literature",
+    "cat_860": "world literature",
+    "cat_830": "poetry prose",
+    # 漫畫與圖像小說
+    "cat_090": "comics manga",
+    "cat_091": "action comic",
+    "cat_092": "graphic novel",
+    "cat_093": "manga",
+    "cat_094": "picture book children",
+    # 資訊科學與科技
+    "cat_400": "computer science",
+    "cat_471": "programming python algorithm",
+    "cat_472": "artificial intelligence machine learning",
+    "cat_473": "cybersecurity linux network",
+    "cat_480": "hardware electronics",
+    # 自然科學與數學
+    "cat_300": "science mathematics",
+    "cat_310": "calculus linear algebra statistics",
+    "cat_320": "physics astronomy quantum",
+    "cat_330": "chemistry material science",
+    "cat_360": "biology medicine evolution",
+    # 社會科學與商業
+    "cat_500": "social science economics",
+    "cat_540": "economics finance investment",
+    "cat_550": "business management marketing",
+    "cat_520": "politics law sociology",
+    "cat_560": "education learning pedagogy",
+    # 人文、哲學與歷史
+    "cat_100": "humanities history",
+    "cat_110": "philosophy logic ethics",
+    "cat_170": "psychology cognitive neuroscience",
+    "cat_610": "world history civilization",
+    "cat_750": "geography travel exploration",
+    # 藝術、設計與生活
+    "cat_900": "art design lifestyle",
+    "cat_940": "visual art architecture design",
+    "cat_910": "music film cinema",
+    "cat_990": "culinary cooking lifestyle",
+}
+
 
 def infer_categories_for_work(title: str, author: Optional[str] = None) -> List[str]:
     """根據書名與作者自動推導所屬的分類 ID 清單。"""

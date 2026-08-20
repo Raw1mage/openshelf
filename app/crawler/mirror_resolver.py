@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional
+from typing import List, Optional, Any
 import httpx
 from bs4 import BeautifulSoup
 
@@ -18,6 +18,23 @@ class MirrorResolver:
         "http://library.lol"
     ]
 
+    def __init__(self, mirrors: Optional[List[str]] = None, dao: Optional[Any] = None):
+        self._custom_mirrors = mirrors
+        self.dao = dao
+
+    @property
+    def active_mirrors(self) -> List[str]:
+        if self._custom_mirrors:
+            return self._custom_mirrors
+        if self.dao:
+            try:
+                verified = self.dao.get_active_libgen_mirror_urls()
+                if verified:
+                    return verified
+            except Exception:
+                pass
+        return self.BASE_MIRRORS
+
     async def resolve_download_url(self, md5: str, candidate_mirrors: Optional[List[str]] = None) -> Optional[str]:
         """給定 MD5 或候選頁面，非同步解析出可用的直鏈下載 URL。"""
         md5 = md5.strip().lower()
@@ -30,10 +47,12 @@ class MirrorResolver:
             verify=False,
             follow_redirects=True
         ) as client:
-            # 1. 優先嘗試各個 Libgen 活躍鏡像家族
-            for base in self.BASE_MIRRORS:
+            # 1. 優先嘗試各個通過預檢驗證的活躍鏡像家族
+            for base in self.active_mirrors:
                 if "library.lol" in base:
                     direct_url = await self._resolve_from_library_lol(client, f"{base}/main/{md5}")
+                elif any(k in base for k in ("libgen.is", "libgen.rs", "libgen.st")):
+                    direct_url = await self._resolve_from_library_lol(client, f"http://library.lol/main/{md5}")
                 else:
                     direct_url = await self._resolve_from_libgen_li(client, f"{base}/ads.php?md5={md5}", base)
                 

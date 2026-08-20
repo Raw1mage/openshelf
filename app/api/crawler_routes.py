@@ -15,7 +15,7 @@ _worker = None
 def get_crawler() -> LibgenCrawler:
     global _crawler
     if _crawler is None:
-        _crawler = LibgenCrawler()
+        _crawler = LibgenCrawler(dao=CatalogDAO())
     return _crawler
 
 def get_worker() -> DownloadWorker:

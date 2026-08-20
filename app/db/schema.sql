@@ -148,3 +148,9 @@ CREATE TABLE IF NOT EXISTS work_category (
 
 CREATE INDEX IF NOT EXISTS idx_work_category_cat ON work_category(category_id);
 
+-- 系統與客製化設定 (System Settings)
+CREATE TABLE IF NOT EXISTS system_setting (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);

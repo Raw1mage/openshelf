@@ -21,6 +21,32 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+}
+
+/* === 全域自訂低調隱藏式捲軸 (Subtle Low-Profile Stealth Scrollbar) === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.42);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 body {
@@ -31,16 +57,22 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  padding-top: 64px;
 }
 
 header {
   border-bottom: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.85);
-  backdrop-filter: blur(12px);
-  position: sticky;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  position: fixed;
   top: 0;
-  z-index: 50;
-  padding: 1rem 2rem;
+  left: 0;
+  right: 0;
+  height: 64px;
+  box-sizing: border-box;
+  z-index: 100;
+  padding: 0 2rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -49,13 +81,17 @@ header {
 .logo-container {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.65rem;
   text-decoration: none;
   color: var(--text-primary);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .logo-icon {
   font-size: 1.75rem;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 .logo-text {
@@ -65,12 +101,15 @@ header {
   background: linear-gradient(135deg, #38bdf8, #818cf8);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .header-actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.65rem;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .btn {
@@ -106,14 +145,37 @@ header {
   border-color: var(--text-secondary);
 }
 
-.btn-outline {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text-primary);
-}
 .btn-outline:hover {
   background: var(--bg-secondary);
   border-color: var(--accent);
+}
+
+.btn-icon {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+}
+
+.btn.active-nav {
+  background: var(--accent) !important;
+  color: #0f172a !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 12px var(--accent-glow) !important;
+}
+
+#queueBadge {
+  font-size: 0.85rem;
+  font-weight: 700;
+  background: var(--accent);
+  color: #000;
+  border-radius: 12px;
+  padding: 0.1rem 0.45rem;
+  line-height: 1;
 }
 
 main {
@@ -214,11 +276,12 @@ main {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1.25rem;
+  padding: 1rem 1.25rem;
   display: flex;
-  justify-content: space-between;
-  gap: 1.25rem;
+  flex-direction: column;
+  gap: 0.5rem;
   transition: all 0.2s ease;
+  position: relative;
 }
 .book-card:hover {
   border-color: var(--accent);
@@ -226,8 +289,96 @@ main {
   box-shadow: var(--shadow);
 }
 
+.book-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.book-indicator-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.book-more-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.book-more-btn {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  max-width: 32px !important;
+  padding: 0 !important;
+  font-size: 1.15rem !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: var(--text-secondary) !important;
+  border-radius: 8px !important;
+  cursor: pointer;
+}
+
+.book-more-btn:hover {
+  color: var(--text-primary) !important;
+  border-color: var(--accent) !important;
+}
+
+.book-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.35rem;
+  min-width: 180px;
+  box-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 100;
+  animation: dropdownPop 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.book-dropdown-menu.active {
+  display: flex;
+}
+
+.book-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  font-weight: 500;
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.book-dropdown-item:hover {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+}
+
 .book-main {
   flex: 1;
+  width: 100%;
 }
 
 .book-title {
@@ -248,12 +399,14 @@ main {
 }
 
 .tag {
-  display: inline-block;
-  padding: 0.15rem 0.55rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.45rem;
   border-radius: 6px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: help;
 }
 .tag-pdf-born { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
 .tag-pdf-scan { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
@@ -277,11 +430,29 @@ main {
 }
 
 .book-actions {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.5rem;
-  min-width: 110px;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 0.45rem !important;
+  flex-shrink: 0 !important;
+}
+.book-actions .btn,
+.book-actions .btn-icon,
+.book-actions a.btn {
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px !important;
+  max-width: 36px !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 1.1rem !important;
+  border-radius: 8px !important;
+  flex: 0 0 36px !important;
+  text-decoration: none !important;
+  box-sizing: border-box !important;
 }
 
 .progress-bar-bg {
@@ -330,10 +501,33 @@ main {
   box-shadow: var(--shadow);
 }
 
+.modal-card-sm {
+  max-width: 380px;
+  width: 90%;
+}
+.modal-card-md {
+  max-width: 580px;
+  width: 90%;
+}
+.modal-card-lg {
+  max-width: 900px;
+  width: 92%;
+  height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-card-xl {
+  max-width: 1100px;
+  width: 95%;
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
 .resizable-card {
   resize: both;
   overflow: hidden;
-  min-width: 380px;
+  min-width: 300px;
   min-height: 250px;
   max-width: 96vw;
   max-height: 90vh;
@@ -363,11 +557,28 @@ main {
 }
 
 .close-btn {
-  background: transparent;
-  border: none;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   color: var(--text-secondary);
-  font-size: 1.5rem;
+  font-size: 1.25rem;
+  line-height: 1;
   cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+.close-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
 }
 
 .form-group {
@@ -406,6 +617,55 @@ main {
   border-color: var(--accent);
   background: rgba(56, 189, 248, 0.05);
 }
+
+.mirror-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  transition: all 0.2s ease;
+}
+.mirror-item-row:hover {
+  border-color: rgba(56, 189, 248, 0.4);
+}
+.mirror-item-row.status-verified {
+  border-left: 3.5px solid #10b981;
+}
+.mirror-item-row.status-unverified {
+  border-left: 3.5px solid #f59e0b;
+}
+.mirror-item-row.status-incompatible_layout {
+  border-left: 3.5px solid #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+}
+.mirror-item-row.status-offline {
+  border-left: 3.5px solid #64748b;
+  opacity: 0.82;
+}
+
+.mirror-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+.mirror-action-btn {
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  max-width: 28px !important;
+  padding: 0 !important;
+  font-size: 0.85rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 6px !important;
+}
+
 
 .mode-tabs {
   display: inline-flex;
@@ -675,6 +935,7 @@ main {
   flex-direction: column;
   justify-content: space-between;
   transition: all 0.2s ease;
+  position: relative;
 }
 .shelf-book-card:hover {
   border-color: var(--accent);
@@ -682,11 +943,648 @@ main {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
-footer {
+.shelf-card-content {
+  flex: 1;
+}
+
+.shelf-actions {
+  position: relative;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 0.45rem !important;
   border-top: 1px solid var(--border);
-  padding: 1.5rem;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 0.88rem;
+  padding-top: 0.5rem;
   margin-top: auto;
 }
+
+.shelf-actions .btn,
+.shelf-actions .btn-icon {
+  width: 34px !important;
+  height: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  padding: 0 !important;
+  font-size: 1.05rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 8px !important;
+  flex: 0 0 34px !important;
+}
+
+.shelf-more-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.shelf-more-btn {
+  width: 34px !important;
+  height: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  padding: 0 !important;
+  font-size: 1.15rem !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: var(--text-secondary) !important;
+  border-radius: 8px !important;
+}
+
+.shelf-more-btn:hover {
+  color: var(--text-primary) !important;
+  border-color: var(--accent) !important;
+}
+
+.shelf-dropdown-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.35rem;
+  min-width: 180px;
+  box-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 50;
+  animation: dropdownPop 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes dropdownPop {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.shelf-dropdown-menu.active {
+  display: flex;
+}
+
+.shelf-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.shelf-dropdown-item:hover {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+}
+
+/* === 手機行動端 RWD 全版獨立頁面與深度優化 (Mobile-First Full-Screen RWD) === */
+.mobile-back-btn {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  *, *::before, *::after {
+    box-sizing: border-box !important;
+  }
+
+  html, body {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  body {
+    padding-top: 52px !important;
+  }
+
+  header {
+    height: 52px !important;
+    padding: 0 12px !important;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    z-index: 1000 !important;
+    background: rgba(15, 23, 42, 0.98) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border-bottom: 1px solid var(--border) !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+  }
+
+  .logo-container {
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  .logo-icon {
+    font-size: 1.15rem !important;
+    line-height: 1 !important;
+    flex-shrink: 0 !important;
+  }
+
+  .logo-text {
+    font-size: 0.92rem !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+    letter-spacing: -0.01em !important;
+  }
+
+  .header-actions {
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    flex-shrink: 0 !important;
+  }
+
+  .header-actions .btn-icon {
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    max-width: 28px !important;
+    padding: 0 !important;
+    font-size: 0.85rem !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 6px !important;
+    flex-shrink: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  .queue-header-btn {
+    height: 28px !important;
+    min-width: 28px !important;
+    padding: 0 4px !important;
+    gap: 2px !important;
+    font-size: 0.82rem !important;
+    border-radius: 6px !important;
+    flex-shrink: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  #queueBadge {
+    font-size: 0.68rem !important;
+    padding: 0.05rem 0.25rem !important;
+  }
+
+  main {
+    padding: 10px 12px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
+    margin: 0 !important;
+  }
+
+  .hero-section {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    margin-bottom: 1.25rem !important;
+  }
+
+  .search-box-wrapper {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 4px 6px !important;
+    gap: 4px !important;
+    border-radius: 12px !important;
+  }
+
+  .search-input {
+    font-size: 0.9rem !important;
+    padding: 0.4rem 0.6rem !important;
+    min-width: 0 !important;
+  }
+
+  #searchBtn {
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    padding: 0 !important;
+    font-size: 0.95rem !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 8px !important;
+    flex-shrink: 0 !important;
+  }
+
+  /* 過濾標籤列支援水平平滑滑動，不折行爆框 */
+  .filter-bar {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding: 4px 0 !important;
+    margin-top: 0.75rem !important;
+    gap: 4px !important;
+    scrollbar-width: none !important;
+    justify-content: flex-start !important;
+  }
+  .filter-bar::-webkit-scrollbar {
+    display: none !important;
+  }
+  .filter-chip {
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+    font-size: 0.76rem !important;
+    padding: 0.25rem 0.55rem !important;
+  }
+
+  /* 書籍卡片自適應單欄流暢排版 */
+  .book-card {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 0.65rem !important;
+    padding: 0.85rem !important;
+  }
+  .book-card > div:first-child {
+    align-self: flex-start;
+  }
+  .book-actions {
+    display: flex !important;
+    flex-direction: row !important;
+    justify-content: flex-end !important;
+    align-items: center !important;
+    gap: 0.45rem !important;
+    border-top: 1px solid var(--border) !important;
+    padding-top: 0.5rem !important;
+    width: 100% !important;
+    margin-top: 0.25rem !important;
+  }
+  .book-actions .btn,
+  .book-actions .btn-icon,
+  .book-actions a.btn {
+    width: 34px !important;
+    height: 34px !important;
+    min-width: 34px !important;
+    max-width: 34px !important;
+    padding: 0 !important;
+    font-size: 1rem !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex: 0 0 34px !important;
+    border-radius: 8px !important;
+    text-decoration: none !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Modal 浮窗在行動端頂部固定在 Header 下方（top: 52px），高度為視窗剩餘高度，Header 永遠可點選切換 */
+  .modal-backdrop {
+    position: fixed !important;
+    top: 52px !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    height: calc(100dvh - 52px) !important;
+    max-height: calc(100dvh - 52px) !important;
+    padding: 0 !important;
+    background: var(--bg-primary) !important;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    z-index: 900 !important;
+    box-sizing: border-box !important;
+  }
+  .modal-card,
+  .modal-card.resizable-card,
+  #queueModalCard {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    min-height: 100% !important;
+    border-radius: 0 !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0.75rem 12px 1rem 12px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    box-shadow: none !important;
+    transform: none !important;
+    top: 0 !important;
+    left: 0 !important;
+    box-sizing: border-box !important;
+    overflow-y: auto !important;
+  }
+
+  .modal-header {
+    padding-bottom: 0.65rem;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-header h2,
+  .modal-header h3 {
+    font-size: 1.15rem !important;
+  }
+
+  .mobile-back-btn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    font-size: 1.25rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    padding: 0.2rem 0.5rem 0.2rem 0;
+  }
+
+  /* 線上書攤：手機端兩階段下鑽導航 */
+  .bookstall-layout {
+    flex-direction: column;
+    height: 100%;
+    margin-top: 0.5rem;
+    gap: 0;
+  }
+  #categoryTreePanel {
+    width: 100% !important;
+    min-width: 100% !important;
+    border-right: none !important;
+    padding-right: 0 !important;
+    flex: 1;
+    display: block;
+  }
+  #shelfContentArea {
+    display: none !important;
+    width: 100% !important;
+    padding-left: 0 !important;
+    flex: 1;
+  }
+
+  #bookstallModal.in-shelf-view #categoryTreePanel {
+    display: none !important;
+  }
+  #bookstallModal.in-shelf-view #shelfContentArea {
+    display: flex !important;
+    flex-direction: column;
+  }
+  #shelfGrid {
+    grid-template-columns: 1fr !important;
+    gap: 0.75rem !important;
+  }
+
+  /* 個人書單：手機端兩階段下鑽導航 */
+  #collectionsSidebar {
+    width: 100% !important;
+    border-right: none !important;
+    padding-right: 0 !important;
+    flex: 1;
+    display: block;
+  }
+  #collectionMainView {
+    display: none !important;
+    width: 100% !important;
+    padding-left: 0 !important;
+    flex: 1;
+  }
+
+  #collectionsModal.in-detail-view #collectionsSidebar {
+    display: none !important;
+  }
+  #collectionsModal.in-detail-view #collectionMainView {
+    display: flex !important;
+    flex-direction: column;
+  }
+
+  /* 批次操作列在手機端全寬底欄 */
+  .batch-bar {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    transform: none;
+    border-radius: 0;
+    width: 100%;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+  }
+}
+
+/* === 通用自訂對話框 / Popover / Modal === */
+.btn-danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+.btn-danger:hover {
+  background: #dc2626;
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+}
+
+.custom-dialog-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.custom-dialog-container.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.custom-dialog-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.custom-dialog-card {
+  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 90%;
+  max-width: 420px;
+  padding: 1.25rem 1.4rem;
+  box-shadow: 0 20px 40px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  z-index: 10001;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: dialogPopIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes dialogPopIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(-6px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.custom-dialog-card.anchored {
+  position: fixed;
+  margin: 0;
+  box-shadow: 0 20px 45px -5px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(56, 189, 248, 0.2);
+}
+
+.custom-dialog-arrow {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  transform: rotate(45deg);
+  display: none;
+  z-index: 10002;
+}
+
+.custom-dialog-card.arrow-top .custom-dialog-arrow {
+  top: -7px;
+  border-bottom: none;
+  border-right: none;
+}
+
+.custom-dialog-card.arrow-bottom .custom-dialog-arrow {
+  bottom: -7px;
+  border-top: none;
+  border-left: none;
+}
+
+.custom-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.custom-dialog-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.custom-dialog-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.custom-dialog-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.custom-dialog-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.2rem;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+
+.custom-dialog-close:hover {
+  color: var(--text-primary);
+}
+
+.custom-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.custom-dialog-message {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+  word-break: break-word;
+}
+
+.custom-dialog-input-wrap {
+  width: 100%;
+}
+
+.custom-dialog-input {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-sizing: border-box;
+}
+
+.custom-dialog-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.custom-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+}
+
+.custom-dialog-footer .btn {
+  padding: 0.45rem 1rem;
+  font-size: 0.9rem;
+}
+
