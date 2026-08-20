@@ -1,6 +1,8 @@
 # BR-20260820_124320 — dao 的 mirror fallback 繞過驗證閘：「驗證失敗」與「尚未驗證」共用同一個輸出
 
-Status: FIXED-UNCOMMITTED
+Status: CLOSED
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
+Fixed-in: 16890d7
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: crawler-mirror-health
 Filed: 2026-08-20 by ses_fe29bb665ffeDEhHsHdW0rFuSi（handler）

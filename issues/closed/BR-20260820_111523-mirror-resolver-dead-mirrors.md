@@ -1,6 +1,8 @@
 # BR-20260820_111523 — mirror_resolver 硬編鏡像六死四，且四種失敗全部靜默
 
-Status: OPEN
+Status: CLOSED
+Closed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
+Fixed-in: 16890d7
 Owner: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 Family: crawler-mirror-health
 Filed: 2026-08-20 by ses_fe7b5cbadffeSlxj0dv1Z740O4
@@ -91,13 +93,58 @@ elif any(k in base for k in ("libgen.is", "libgen.rs", "libgen.st")):
 
 ## 驗收判準
 
-- [ ] 對 `library.lol` 呼叫 `resolve_download_url` 時，**日誌出現查封告警**（非靜默 None）
-- [ ] 負控制組：對 `libgen.li` 的真實 md5 呼叫仍能取得直鏈（證明沒有誤殺）
-- [ ] `verify=False` 在 repo 中命中數為 0（或每一處都有具名理由註解）
-- [ ] 死鏡像不再消耗 10s timeout
+- [x] 對 `library.lol` 呼叫 `resolve_download_url` 時，**日誌出現查封告警**（非靜默 None）—— `_guard_is_library()` + `log.warning`，5 個 fixture 雙向測試
+- [x] 負控制組：對 `libgen.li` 的真實 md5 呼叫仍能取得直鏈（證明沒有誤殺）
+- [x] `verify=False` 在 repo 中命中數為 0（grep rc=1，控制組 `follow_redirects=True` 命中 4 處）
+- [x] 死鏡像不再消耗 10s timeout
+
+### timeout 驗收項的實測（值星官獨立量測，2026-08-20）
+
+```
+修後清單  active_mirrors = ['libgen.li', 'libgen.la', 'libgen.is']
+          真實 md5 8165314895008cdbe22f17f69bb4ae28
+          elapsed=1.20s  → https://libgen.li/get.php?md5=...&key=8JO
+          seized_mirrors = set()
+
+控制組    強制套回舊的六鏡像清單（含四個死的）+ 不存在的 md5
+          elapsed=8.73s  → None
+```
+
+**1.20s vs 8.73s。** 控制組證明這個數字差來自鏡像清單本身，
+而非網路狀況波動——舊清單在同一台機器、同一時刻仍然燒掉 8.7 秒。
+
+## 收尾修正：本 BR 自己寫錯的一格
+
+上方「修復方向 2」建議用 anchor 數門檻（查封頁 `<a>`=0 vs 真頁 ≥79）判別。
+**那條判準是錯的，handler 實測後拒絕執行。**
+
+建檔時我**沒有抓「書不存在」的樣本**，而那種頁只有 **5 個** `<a>`：
+
+```
+REAL   md5 ads.php   bytes=20916  a=72  ← 真詳情頁
+BOGUS  md5 ads.php   bytes=8586   a=5   ← 缺席態（本 BR 漏掘）
+library.lol root     bytes=1339   a=0   ← 查封
+libgen.rocks root    bytes=2527   a=0   ← 查封
+```
+
+用 ≥79 當門檻會把「這本書沒有」判成「鏡像被查封」——
+**正是本 BR 要消除的那個病，只是換了個方向。**
+
+實際採用：7 個結構標記計分（站點自有資產 + 路由 + `div#download` + `<table>`），門檻 2。
+實測：真詳情頁 **5**、真缺席頁 **3**、三種查封頁 **0**。
+且附 mutation 控制組（threshold 99 → 全否，0 → 全肯，2 → 唯一正確分割）證明門檻真的在承重。
+
+**留下這一格是刻意的**：下一個寫 BR 的人在描述「怎麼分辨 A 與 B」時，
+必須同時拿到 A 與 B 的樣本。只抓一邊就寫判準，寫出來的會是另一個同類缺陷。
 
 ## 沒驗證的
 
-- 未實際跑過 `resolve_download_url`（本 BR 純靜態閱讀 + 站點實測，未進容器）。
-- `dao.get_active_libgen_mirror_urls()` 目前回什麼未查——若它已供應動態清單，
-  `BASE_MIRRORS` 可能只是 fallback，D1 的實際嚴重度會下降（但 D2/D3/D4 不受影響）。
+- ~~未實際跑過 `resolve_download_url`~~ —— 已補（見上方 timeout 實測）。
+- ~~`dao.get_active_libgen_mirror_urls()` 目前回什麼未查~~ —— 已查實：
+  **dao 優先於 `BASE_MIRRORS`**（`download_worker.py:67` 恆帶 dao），
+  而 dao 的預設清單四個死鏡像都標 `verified` ——
+  **只修 `BASE_MIRRORS` 在 production 是零效果**。已於本次一併修正（見 16890d7）。
+- **仍未驗證**：`libgen.is` 走 `ads.php` 的新路徑（該站 TCP 逾時，UNDECIDABLE）。
+- **仍未驗證**：`validator.py` 移除 `verify=False` 後的錯誤路徑改變（自簽憑證鏡像
+  現在會連線失敗而非被判 `incompatible_layout`）。
+- **仍未驗證**：真實下載到落檔完成（只驗到 header）。
