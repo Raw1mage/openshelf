@@ -1,11 +1,17 @@
 # BR-20260821_040000 — `dec5b44` 只搬了 DB：`raw_dir` 與 `parsed_dir` 仍在 NFS，且寫入跑在 event loop 執行緒上
 
-- **Status**: **PARTIAL** —— 兩半中的一半已修，另一半未裁決。不得歸檔至 `closed/`。
-  - ✅ **已修**：每請求 `os.mkdir` on NFS（handler `ses_fdf38a329ffehvLOfKjb3cCBwm`，見下方「已消除的那一半」節）
-  - ⏸ **未修**：`raw_dir` / `parsed_dir` 實體仍在 NFS（修法選項 A / C 未裁決）
+- **Status**: **CLOSED** —— 兩個機制皆已修復且生效。
+  - ✅ **機制①**：每請求 `os.mkdir` on NFS（handler `ses_fdf38a329ffehvLOfKjb3cCBwm`，`2d69b3f`，見「已消除的那一半」節）
+  - ✅ **機制②**：下載暫存改寫本地 ext4、完成後才搬 NAS（handler `ses_fde28053affeLHPxbJPFA4czfn`，`b6d1fbc`，選項 **C**，見「機制② 的處置」節）
+  - ⓘ **`raw_dir` / `parsed_dir` 本體仍在 NFS —— 這是 by-design，不是殘留。**
+    NAS 就是書庫本體該待的地方（`docker-compose.yml:16` 註解自陳「體積大、以順序讀寫為主」）。
+    本 BR 要治的從來不是「書放哪」，是**寫入過程中的中介狀態放哪**——那格已由機制② 解決。
+    若日後有人認為書檔本體也該本地化，那是一個**新的容量／效能取捨決策**，開新張，
+    不要重開本案（本案的證據鏈是為「中介狀態」建立的，套到「本體」上不成立）。
+- **Closed**: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Family**: `db-storage-substrate`
-- **Severity**: 待定（殘餘那一半）—— **理論風險已坐實，實際危害尚未觀察到**（見「為何不是高」節）。
+- **Severity**: 中（結案時判定）—— 機制① 爆炸半徑全站、機制② 限於下載/入庫；**兩者皆為理論風險坐實但實際危害未觀察到**（見「為何不是高」節）。
   ⚠ 本欄於 2026-08-21 改寫：原本的「待定」覆蓋兩個機制，而其中一個（每請求 mkdir）
   的爆炸半徑其實是**全站**而非下載功能，已不適用同一個論證。拆開見下。
 - **Filed**: 2026-08-21 by ses_fe7b5cbadffeSlxj0dv1Z740O4
@@ -202,7 +208,7 @@ NEGCTL 純 exists() 後 mkdir_total=0   ← 有鑑別力，不是恆回 1
 | | 機制 | 爆炸半徑 | 路徑 | 狀態 |
 |---|---|---|---|---|
 | **①** | 每一個 API 請求對 NFS 下 3 次 `os.mkdir` | **全站每一個請求** | threadpool（40 格） | ✅ 已修 |
-| **②** | `raw_dir` / `parsed_dir` 實體寫入在 NFS | 下載 / 入庫功能 | 專用池（4 格） | ⏸ 未裁決 |
+| **②** | `raw_dir` / `parsed_dir` 實體寫入在 NFS | 下載 / 入庫功能 | 專用池（4 格） | ✅ 已修（選項 C，`b6d1fbc`） |
 
 **機制① 是本 BR 建檔時被低估的那格。** 原文把它寫成「下載路徑的基質層事實」，
 實際上連 `q=zzzznomatch` 那種完全不碰檔案、四毫秒就回完的搜尋，也在對 NFS 下 syscall。
@@ -292,7 +298,7 @@ L0_404          total=0.002    ← 同刻正常
 dispatcher 已裁示執行順序：先量真實負載下的尖峰形狀 → 量不到才人為製造 NFS 壓力 →
 兩步都指向需要才授權建真實下載 job。
 
-## 修法選項（未裁決）
+## 修法選項（已裁決：**C**）
 
 | | 動什麼 | 代價 | 風險 |
 |---|---|---|---|
