@@ -40,6 +40,33 @@ class StorageManager:
         self.raw_dir = self.base_dir / "raw"
         self.parsed_dir = self.base_dir / "parsed"
         self.db_dir = self.base_dir / "db"
+        # 下載暫存區（BR-20260821_040000 機制②，選項 C）。
+        #
+        # **為何掛在 `db_dir` 底下而不是 `base_dir / "staging"`**：實測
+        # （`docker inspect` + 容器內 `df -T`）只有三個路徑被 bind-mount，
+        # `base_dir`（`/data`）本身**沒有**掛載——它是容器的 overlay 層：
+        #
+        #     /data/raw     nfs4     ← NAS
+        #     /data/parsed  nfs4     ← NAS
+        #     /data/db      ext4     ← host ./data/db，唯一的本地持久掛載
+        #     /data（本身）  overlay  ← 容器層，rebuild 即消失
+        #
+        # 所以 `/data/staging` 會落在 **overlay**，容器一 rebuild 就整個消失，
+        # 而 `.part` 檔正是斷點續傳（HTTP Range）跨重啟續傳的依據
+        # （`_load_jobs_from_disk` 把 `downloading` 復原成 `queued` 重新入列，
+        # 再由 `_part_size` 讀既有 `.part` 決定 Range 起點）。放 overlay 會讓
+        # 「跨重啟續傳」靜默退化成「每次重啟整檔重下」——功能還在、行為變了、
+        # 沒有任何錯誤訊號。
+        #
+        # `db_dir` 底下是**在不改 `docker-compose.yml` 的前提下**唯一同時滿足
+        # 「本地非 NFS」＋「跨容器重建持久」的位置。語意上把數百 MB 的下載暫存
+        # 放進 `db/` 並不漂亮；正解是新增一條 `./data/staging:/data/staging`
+        # 掛載，但那要改 compose。`OPENSHELF_STAGING_DIR` 就是那個逃生口：
+        # 掛載一旦補上，設這個 env 即可搬離，不需要改這裡的程式碼。
+        staging_override = os.getenv("OPENSHELF_STAGING_DIR")
+        self.staging_dir = (
+            Path(staging_override).resolve() if staging_override else self.db_dir / "staging"
+        )
         self._ensure_directories_once()
 
     def _ensure_directories_once(self) -> bool:
@@ -75,6 +102,10 @@ class StorageManager:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.parsed_dir.mkdir(parents=True, exist_ok=True)
         self.db_dir.mkdir(parents=True, exist_ok=True)
+        # 暫存區在本地 ext4 上，mkdir 是一次本地 syscall（不是 NFS RPC），
+        # 所以放在這條既有的引導路徑上不會重新引入 BR-20260821_040000 機制①
+        # 的每請求 NFS mkdir 成本。
+        self.staging_dir.mkdir(parents=True, exist_ok=True)
         StorageManager._ensured_dirs.add(str(self.base_dir))
 
     @staticmethod

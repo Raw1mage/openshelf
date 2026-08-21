@@ -109,7 +109,27 @@ def test_explicit_ensure_directories_always_executes(tmp_path, monkeypatch, fres
     calls = _count_mkdir(monkeypatch)
     storage.ensure_directories()           # 顯式呼叫
 
-    assert len(calls) == 3, f"顯式 ensure_directories 應下 3 次 mkdir，實際 {calls}"
+    # 斷言「哪些目錄」而不是「幾個目錄」（BR-20260821_040000 機制② 修改）。
+    #
+    # 原本是 `len(calls) == 3`。那個 3 是目錄數量，**不是這條測試要保護的契約**
+    # ——契約是「顯式呼叫一律真的下 syscall，不得靜默變成 no-op」。新增
+    # `staging_dir` 後裸數字變 4，但若只把 3 改成 4，下一個人仍然無從得知
+    # 這條測試在鎖什麼、也看不出少建了哪一個目錄。
+    #
+    # 改成集合比對是**收緊**不是放寬：原寫法對「建了 3 個但其中一個是錯的路徑」
+    # 完全無感（3 == 3 照樣通過），現在那會直接指名是哪一個不對。
+    expected = {
+        str(storage.raw_dir),
+        str(storage.parsed_dir),
+        str(storage.db_dir),
+        str(storage.staging_dir),
+    }
+    assert set(calls) == expected, (
+        f"顯式 ensure_directories 下的 mkdir 目標與預期不符。\n"
+        f"  多出來：{set(calls) - expected}\n"
+        f"  少掉了：{expected - set(calls)}"
+    )
+    assert len(calls) == len(expected), f"有目錄被重複 mkdir：{calls}"
 
 
 def test_ensure_once_return_value_distinguishes_skip_from_run(tmp_path, fresh_guard):

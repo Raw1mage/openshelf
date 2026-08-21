@@ -3,6 +3,7 @@ import re
 import uuid
 import hashlib
 import asyncio
+import errno
 import tempfile
 import logging
 from pathlib import Path
@@ -136,7 +137,162 @@ class DownloadWorker:
         self._load_jobs_from_disk()
 
     def _get_part_path(self, job: DownloadJob) -> Path:
+        """`.part` 斷點檔落點：**本地 ext4 暫存區，不是 NAS**（BR-20260821_040000 機制②）。
+
+        改這一行的理由不是「NFS 比較慢」，而是**下載期間的每一次 64KB 寫入
+        都是一次 NFS RPC 往返**：一個 300MB 的檔 = 約 4800 次往返，全部在
+        `hard,timeo=600` 的掛載上。NAS 一 stall，專用 `_FILE_IO_LIMITER(4)`
+        的 4 個 token 會被 60 秒級地佔住，佇列中的其他下載全部排隊。
+        寫本地 ext4 後，NFS 只在**下載完成後的那一次搬移**被碰到——
+        把「數千次曝險」壓成「一次曝險」。
+
+        `staging_dir` 的落點選擇與 overlay 陷阱見 `StorageManager.__init__`。
+        """
+        return self.pipeline.storage.staging_dir / f"{job.job_id}_{job.md5}.part"
+
+    def _legacy_part_path(self, job: DownloadJob) -> Path:
+        """舊落點（NAS `raw_dir`）的 `.part` 路徑。
+
+        存在的唯一理由是**遷移期**：本次變更前建立的 `.part` 檔還躺在 NAS 上，
+        而 `_load_jobs_from_disk()` 會把 `downloading` 的 job 復原成 `queued`
+        重新入列。若只認新落點，那些 job 會從 0 重下，而**舊檔會永遠留在 NAS
+        上沒有任何人再引用它**——孤兒檔靜默增生，且「續傳成功」與「整檔重下」
+        對使用者共用同一個輸出（都只是進度條動起來）。
+
+        實測本次變更當下 NAS 上 `.part` 檔數為 0（控制組：同目錄 `.pdf` 為 15，
+        證明列舉指令有鑑別力），所以這條路徑在本次部署不會被觸發；保留它是為了
+        **不依賴「部署當下剛好沒有進行中的下載」這個時機假設**。
+        """
         return self.pipeline.storage.raw_dir / f"{job.job_id}_{job.md5}.part"
+
+    @staticmethod
+    def _move_across_filesystems(src: Path, dst: Path) -> str:
+        """把 `src` 搬到 `dst`，**同檔案系統與跨檔案系統都要能成功**。
+
+        回傳實際走的路徑：`"rename"`（同裝置，一次 `rename(2)`、原子）或
+        `"copy"`（跨裝置，copy+unlink、**非原子**）。回字串而非 None，是為了讓
+        兩條路徑在測試裡可區分——它們的成本差三個數量級（微秒 vs 數百 MB 的
+        整檔複製），共用同一個輸出就無法證明「同裝置時沒有意外走成複製」。
+
+        **為何不直接用 `shutil.move`**：`shutil.move` 在 `dst` 已存在時，
+        同裝置走 `os.rename` 會靜默覆蓋，跨裝置則走 `copy2` + `unlink`——
+        行為一致，但我們拿不到「走了哪條」。這裡先試 `os.replace`（快路徑），
+        只在 `EXDEV` 時才 fallback，**其他 errno 一律往上拋**：權限不足、
+        目標目錄不存在、磁碟滿，全都不該被一個無條件的 fallback 吃掉而
+        偽裝成「跨裝置」。
+
+        跨裝置路徑刻意先寫到 `dst` 同目錄的 `.tmp_<pid>` 再 `os.replace` 成
+        `dst`：整檔複製到 NAS 期間若失敗（NFS stall / 容器被殺），留下的是一個
+        `.tmp_` 檔而**不是一個長度不足卻叫做正式檔名的半成品**。後者會被
+        `process_file` 當成完整檔案算雜湊入庫——靜默的資料損毀。
+        """
+        import os as _os
+        import shutil as _shutil
+
+        try:
+            _os.replace(src, dst)
+            return "rename"
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+
+        tmp_dst = dst.with_name(dst.name + f".tmp_{_os.getpid()}")
+        try:
+            _shutil.copyfile(src, tmp_dst)
+            _os.replace(tmp_dst, dst)
+        except BaseException:
+            # 失敗時不留半成品；清理本身失敗不得蓋掉原始例外。
+            try:
+                tmp_dst.unlink()
+            except OSError:
+                pass
+            raise
+        # 來源刪不掉不算搬移失敗（檔案已在 dst），但必須出聲——
+        # 否則本地暫存區會靜默累積孤兒檔。
+        try:
+            src.unlink()
+        except OSError as e:
+            log.warning(
+                "跨檔案系統搬移後來源刪除失敗，本地暫存可能殘留：%s: %s | src=%s",
+                type(e).__name__, e, src,
+            )
+        return "copy"
+
+    def _adopt_legacy_part(self, job: DownloadJob, part_file: Path) -> str:
+        """把舊落點（NAS `raw_dir`）的 `.part` 檔認領到本地暫存區。
+
+        回傳實際發生的事，四態刻意分開（不共用同一個輸出）：
+          `"none"`      舊檔不存在——絕大多數情況（新流程建立的 job）
+          `"adopted"`   真的搬了一個舊檔回來，續傳進度保住
+          `"redundant"` 新舊落點都有檔 → 新的優先，舊的刪掉（否則它永遠是孤兒）
+          `"failed"`    搬移失敗，舊檔留在 NAS，這次從 0 重下
+
+        `"none"` 與 `"failed"` 若都回同一個值，「本來就沒有舊檔」與
+        「有舊檔但搬不動」就不可區分，而後者代表 NAS 上有一個沒人再引用的檔。
+        """
+        legacy = self._legacy_part_path(job)
+        if self._part_size(legacy) < 0:
+            return "none"
+        if self._part_size(part_file) >= 0:
+            # 新落點已有檔（例如遷移後又下載過），舊檔沒有任何人會再讀它。
+            self._remove_part_file(legacy)
+            return "redundant"
+        try:
+            self._move_across_filesystems(legacy, part_file)
+            log.info("已將舊落點的下載斷點檔認領至本地暫存區：%s -> %s", legacy, part_file)
+            return "adopted"
+        except OSError as e:
+            log.warning(
+                "舊落點斷點檔認領失敗，本次將從頭下載（舊檔仍留在 NAS）：%s: %s | legacy=%s",
+                type(e).__name__, e, legacy,
+            )
+            return "failed"
+
+    def sweep_orphan_parts(self) -> Dict[str, int]:
+        """清掉暫存區裡**沒有任何 job 引用**的 `.part` 檔。
+
+        為何需要（BR-20260821_040000 的新增代價，dispatcher 明確點名這格）：
+        `.part` 檔的清理原本只掛在 `delete_job` / `adelete_job` 上，也就是
+        **只有使用者主動刪 job 時才會刪檔**。下列路徑全都留下殘留：
+
+          - `clear_completed()` 直接 `del self.jobs[...]`，不碰檔案
+          - 程序被 SIGKILL / 容器重建時，`downloading` 的 job 若沒落盤就消失
+          - `_load_jobs_from_disk` 載入失敗（JSON 壞掉）→ 整份 job 清單歸零，
+            而檔案還在
+
+        舊流程這些殘留落在 42T 的 NAS 上（23T 可用），新流程落在本地
+        530G 上——**同一個既有缺陷，暴露面積變小但後果變嚴重**，所以這次
+        必須一起處理，不能沿用「反正 NAS 很大」。
+
+        回傳 `{"scanned": n, "removed": n, "kept": n}` 而非只回刪除數：
+        `removed=0` 有兩種意思（沒有孤兒 / 掃不到任何檔），共用一個輸出就無法
+        判斷這支掃除到底有沒有在工作。`scanned` 就是那個控制組。
+        """
+        staging = self.pipeline.storage.staging_dir
+        live = {self._get_part_path(j).name for j in self.jobs.values()}
+        scanned = removed = kept = 0
+        try:
+            entries = list(staging.glob("*.part"))
+        except OSError as e:
+            log.warning(
+                "暫存區掃描失敗，孤兒斷點檔未清理：%s: %s | dir=%s",
+                type(e).__name__, e, staging,
+            )
+            return {"scanned": 0, "removed": 0, "kept": 0}
+
+        for entry in entries:
+            scanned += 1
+            if entry.name in live:
+                kept += 1
+                continue
+            if self._remove_part_file(entry):
+                removed += 1
+        if removed:
+            log.info(
+                "已清理暫存區孤兒斷點檔：scanned=%d removed=%d kept=%d | dir=%s",
+                scanned, removed, kept, staging,
+            )
+        return {"scanned": scanned, "removed": removed, "kept": kept}
 
     @staticmethod
     def _part_size(part_file: Path) -> int:
@@ -265,6 +421,12 @@ class DownloadWorker:
             # 重新啟動時必須清掉關閉旗標，否則新迴圈會把第一個 pause 取消
             # 當成 shutdown 而立刻死掉。
             self._stopping = False
+            # 啟動點是唯一能回收「上次程序被 SIGKILL / 容器被重建」那批殘留的
+            # 時機：那些 job 已經不在 `self.jobs` 裡，沒有任何執行路徑會再碰
+            # 它們的 `.part` 檔。此時 `_load_jobs_from_disk()` 已在建構子跑完，
+            # 所以 live 集合是完整的——**順序不可調換**，先掃會把還活著的
+            # 續傳檔當成孤兒刪掉。
+            self.sweep_orphan_parts()
             self._worker_task = loop.create_task(self._process_queue())
 
     async def stop(self, timeout: float = 5.0) -> bool:
@@ -688,12 +850,19 @@ class DownloadWorker:
             job.collection_sync_error = None
 
     def clear_completed(self) -> int:
-        """清理所有已完成狀態的下載任務記錄。"""
+        """清理所有已完成狀態的下載任務記錄。
+
+        清 job 記錄後**必須**跟著掃一次暫存區：這裡 `del self.jobs[jid]` 之後，
+        該 job 的 `.part` 檔（若存在）就永遠沒有人再引用它。原本沒有這一步，
+        殘留落在 42T 的 NAS 上不痛不癢；改成本地 530G 暫存區後同一個缺陷
+        後果變重（見 `sweep_orphan_parts`）。
+        """
         completed_ids = [jid for jid, j in self.jobs.items() if j.status == "completed"]
         for jid in completed_ids:
             del self.jobs[jid]
         if completed_ids:
             self._save_jobs_to_disk()
+            self.sweep_orphan_parts()
         return len(completed_ids)
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -747,6 +916,9 @@ class DownloadWorker:
         job.updated_at = datetime.now(timezone.utc).isoformat()
 
         part_file = self._get_part_path(job)
+        # 遷移期認領：本次變更前留在 NAS 的 `.part` 檔搬回本地暫存區，
+        # 續傳進度才不會被靜默丟棄（見 `_legacy_part_path`）。
+        await _run_file_io(self._adopt_legacy_part, job, part_file)
         max_attempts = 6
         last_error = None
 
@@ -863,10 +1035,23 @@ class DownloadWorker:
         filename = f"{job.title}.{job.extension}"
         final_dest = self.pipeline.storage.get_raw_path(job.md5, job.extension)
 
-        # 移動暫存檔為正式原檔。同一個 NFS 挂載內這是一次 rename(2)（便宜），
-        # 但若 raw_dir 日後被搬到別的檔案系統，`Path.replace` 會退化成整檔複製
-        # （數百 MB）——兩種情境共用這一行，所以一律移出 loop。
-        await _run_file_io(part_file.replace, final_dest)
+        # 移動暫存檔為正式原檔。**這是本次流程唯一碰到 NAS 的寫入**
+        # （BR-20260821_040000 機制②）：`.part` 全程寫在本地 ext4，
+        # 只有校驗通過（上面 `_part_size > 0`）之後才搬上 NAS。
+        #
+        # ⚠ 原註解說「`Path.replace` 會退化成整檔複製」是**錯的**，實測推翻：
+        #
+        #     T1 本地ext4 -> NAS nfs4  Path.replace  -> OSError errno=18 (EXDEV)
+        #                                               src 仍在、dst 未建立
+        #     C1 同一檔案系統內          Path.replace  -> 成功（控制組，證明測法有效）
+        #     T2 本地ext4 -> NAS nfs4  shutil.move   -> 成功，dst_size 相符
+        #     T3 dst 已存在時 shutil.move            -> 成功覆蓋
+        #     C2 同檔案系統 os.replace 覆蓋既有       -> 成功（控制組）
+        #
+        # `os.replace` 跨裝置是**直接失敗**，不是降級成 copy；會 fallback 成
+        # copy+unlink 的是 `shutil.move`。兩者差別在這裡是致命的：照原說法實作，
+        # 每一個下載都會在最後一步拋 EXDEV 而整個 job 失敗。
+        await _run_file_io(self._move_across_filesystems, part_file, final_dest)
 
         metadata_override = {
             "title": job.title,
