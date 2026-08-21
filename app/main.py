@@ -13,8 +13,19 @@ from app.api.settings_routes import router as settings_router
 from app.storage.manager import StorageManager
 from app.db.engine import DatabaseEngine
 from app.api.crawler_routes import get_worker
+from app.logging_config import configure_logging
 
 from contextlib import asynccontextmanager
+
+# 模組層而非 lifespan 內：`app.*` 的 logger 在 import 期就可能發話（例如
+# MirrorValidator.__init__ 的 log.error），而 lifespan 要等到第一個 ASGI
+# startup 事件才跑。放在這裡，import 期的訊息才不會落進「還沒有 handler」
+# 的空窗而被 lastResort 以裸格式吞掉。
+# 這行也是 BR-20260821_030000 殘留格①的修復點：在此之前全 app 沒有任何
+# logging 配置，root 停在預設 WARNING 且 handlers 為空，parser 的
+# `log.debug`（丟棄留痕）在生產路徑上永遠發不出來。
+configure_logging()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

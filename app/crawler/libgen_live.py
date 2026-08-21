@@ -316,6 +316,60 @@ class LibgenCrawler:
                 continue
         return []
 
+    # 丟棄留痕的等級門檻。「丟掉幾筆」與「整批都被丟掉」是兩種不同的事，
+    # 不得共用同一個等級——理由見 _log_md5_drops。
+    def _log_md5_drops(self, adapter: str, dropped: int, kept: int, base_url: str) -> None:
+        """記錄本次解析因無 md5 而丟棄的 row 數。
+
+        **等級不是單一值，而是依「這批還剩不剩東西」分流**，因為兩種情形對讀者
+        的意義完全不同：
+
+          - `kept > 0`（丟掉一部分）-> INFO。
+            這是**正常但值得知道**的事：來源版型裡本來就會混雜少數無下載連結的
+            項目，使用者仍拿得到結果。用 DEBUG 會讓它在生產環境永遠看不到
+            （本專案生產等級為 INFO）；用 WARNING 則會讓每次正常搜尋都噴警告，
+            久了沒有人會再看警告——那是把留痕做成雜訊。
+
+          - `kept == 0 且 dropped > 0`（整批都被丟掉）-> WARNING。
+            這一格才是 BR-20260821_030000 的核心：對外的輸出是空的 `[]`，而
+            「這批 row 全無 md5」「parser 壞了」「搜尋本來就沒結果」三者共用
+            這同一個空 list。它同時是**來源版型可能已變更**的第一個訊號——
+            例如鏡像把 md5 從 href 改成 data 屬性，症狀正是全部落進這一格。
+            這是需要人介入判斷的情況，不是例行資訊。
+
+        誰會讀這個 log、在什麼情境下讀（這決定了上面的取捨）：
+          1. 維護者在使用者回報「搜到的比預期少 / 根本搜不到」時翻 `docker logs`。
+             他要能一眼分辨「來源就沒有」與「我們自己過濾掉了」。
+          2. 維護者在鏡像清單維護（`/api/settings/libgen-mirrors/validate`）之後，
+             想知道某個新鏡像實際被解析成什麼樣子。
+          3. 沒有人會在「一切正常」時盯著它——所以 INFO 那一格必須夠稀疏
+             （只在真的有丟棄時才發，`dropped == 0` 完全不出聲）。
+
+        `dropped == 0` 時**一個字都不印**：那是絕大多數情況，印了就是純雜訊，
+        且會讓「有丟棄」這件事失去對比度。
+        """
+        if not dropped:
+            return
+
+        # `dropped %d row(s)` 是**穩定的可檢形式**，兩個分支必須一字不差地共用。
+        # tests/test_libgen_parser_md5_gate.py 兩條斷言（`dropped 1 row(s)` 與
+        # `dropped 2 row(s)`）靠它區分丟棄筆數；在中間插入任何字（如 `ALL`）
+        # 都會讓那兩條失效。「整批丟棄」靠的是**等級與句尾補述**，不是改寫計數句。
+        if kept:
+            log.info(
+                "%s adapter dropped %d row(s) with no md5 (unresolvable download);"
+                " kept %d | mirror=%s",
+                adapter, dropped, kept, base_url,
+            )
+        else:
+            log.warning(
+                "%s adapter dropped %d row(s) with no md5 (unresolvable download);"
+                " kept 0 — the entire batch was dropped and the result set is empty."
+                " 反覆出現時優先懷疑該鏡像版型已變更（BR-20260821_030000）。"
+                " | mirror=%s",
+                adapter, dropped, base_url,
+            )
+
     def _parse_libgen_li_html(self, html_content: str, base_url: str) -> List[Dict[str, Any]]:
         """解析 libgen.li 專屬搜尋結果表格。"""
         soup = BeautifulSoup(html_content, "html.parser")
@@ -396,11 +450,7 @@ class LibgenCrawler:
                 "source": "libgen"
             })
 
-        if dropped_no_md5:
-            log.debug(
-                "libgen_li adapter dropped %d row(s) with no md5 (unresolvable download); kept %d",
-                dropped_no_md5, len(items),
-            )
+        self._log_md5_drops("libgen_li", dropped_no_md5, len(items), base_url)
         return items
 
     def _parse_libgen_is_html(self, html_content: str, base_url: str) -> List[Dict[str, Any]]:
@@ -482,9 +532,5 @@ class LibgenCrawler:
                 "source": "libgen"
             })
 
-        if dropped_no_md5:
-            log.debug(
-                "libgen_is adapter dropped %d row(s) with no md5 (unresolvable download); kept %d",
-                dropped_no_md5, len(items),
-            )
+        self._log_md5_drops("libgen_is", dropped_no_md5, len(items), base_url)
         return items
