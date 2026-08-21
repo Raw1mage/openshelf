@@ -1,6 +1,6 @@
 # BR-20260821_030000 — 空 md5 的公網項目全部共用同一個 work_id `libgen_`，且互撞在前端與後端都無聲
 
-- **Status**: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`3597e2e`）；四格殘留已於 2026-08-21 銷三格，但**兩格仍開著**（is 適配器無真實樣本、丟棄留痕在生產路徑不可觀察），故不進 `closed/`
+- **Status**: **PARTIAL** — 主修復已 landed 並經 dispatcher 獨立驗收（`3597e2e`）；四格殘留已於 2026-08-21 銷三格，**殘留格①（丟棄留痕在生產路徑不可觀察）亦於同日修復並獨立驗收**（見「⬆ 2026-08-21 處置紀錄」節）。**仍開著的只剩一格：`is` 適配器無真實樣本 — 而那格擋在網路不在程式**（三個 is 鏡像 `CURL_RC=28` 不可達，控制組 libgen.li HTTP=200 有鑑別力），**做不到不是沒做**，故不進 `closed/`
 - **Fixed-by**: `3597e2e`（handler `ses_fdfe0c00fffea02pCkU7S4EE3x`，dispatcher 驗收 2026-08-21）
 
 ## 處置（使用者裁示）
@@ -93,7 +93,7 @@ CONTROL  app/ 全域 'def '                              rc=0（20 檔）
 ```
 控制組有鑑別力 ⇒ 那兩個 0 不是 pattern 寫錯。**沒有快取層，parser 是搜尋結果的唯一來源。**
 
-## 新發現的揭露缺陷（handler 依判準②回報，dispatcher 獨立坐實）
+## 新發現的揭露缺陷（handler 依判準②回報，dispatcher 獨立坐實）→ **2026-08-21 已修，見下方「處置紀錄」**
 
 **上方「丟棄留痕」那格的 `log.debug` 在生產路徑上不可觀察——它的效果目前是 0。**
 
@@ -114,13 +114,128 @@ CONTROL  app/ 全域 'def '                              rc=0（20 檔）
 否則 (a) 這批 row 全無 md5、(b) parser 壞了、(c) 搜尋本來沒結果 共用同一個輸出。
 而那個留痕在生產環境**發不出來**，三態仍然共用同一個輸出。
 
-兩條修法選項（**未裁決**，都要動 production 檔）：
-- **(a)** `log.debug` → `log.info`：改動最小，但 root 仍在 WARNING ⇒ **仍然發不出來**。
-  除非同時降 root level，否則這個選項是無效的——這一格必須實測，不得推論。
-- **(b)** `app/main.py` 加一次 `logging.basicConfig(level=...)`：真的會發出來，
-  但**影響全 app 的 log 量**（目前 12 處 `getLogger`），是全局性變更。
+~~兩條修法選項（**未裁決**，都要動 production 檔）：~~
+- ~~**(a)** `log.debug` → `log.info`：改動最小，但 root 仍在 WARNING ⇒ **仍然發不出來**。~~
+- ~~**(b)** `app/main.py` 加一次 `logging.basicConfig(level=...)`：真的會發出來，
+  但**影響全 app 的 log 量**（目前 12 處 `getLogger`），是全局性變更。~~
 
-這也是 BR-030000 **不能進 `closed/`** 的第二個理由。
+> **上面兩條選項都沒有被採用，但刻意保留不刪**——直接刪掉，下一個人會再想出同一組
+> 選項，然後重踩 (b) 那格（調 root 會把 `httpx` 每次鏡像請求的一行、`watchfiles`
+> 每次 reload 掃描一起放行，訊號被無關訊息淹沒）。實際採用的是**第三條路**，見下節。
+
+## ⬆ 2026-08-21：殘留格①「丟棄留痕不可觀察」處置紀錄（已修，dispatcher 獨立驗收）
+
+**Fixed-by**: handler `ses_fde6ed669ffewmBJJLzyxKfJMw`，dispatcher 獨立重跑全部判準後授權 commit。
+
+### ⚠ 先更正 dispatcher 自己寫在上一節的一格前提（**這格比修復本身更值得記**）
+
+上一節（與 dispatcher 的派工單）寫：
+
+> root logger 停在預設 WARNING ⇒ `log.debug` 與 `log.info` 都被丟棄
+
+**前半正確，但從那個正確的前提推出了一個過寬的結論。** handler 推翻並實測坐實：
+
+```
+docker exec openshelf-app python -c 'import logging; ...'
+  root.handlers  = []
+  root.level     = 30 WARNING
+  logging.lastResort           = <_StderrHandler <stderr> (WARNING)>
+  logging.lastResort.level     = 30 WARNING
+  logging.lastResort.formatter = None          ★ 這格上一節完全沒提
+```
+
+CPython 在「整條 logger 鏈一個 handler 都找不到」時，會由 `logging.lastResort`
+（一個 level=WARNING 的裸 `_StderrHandler`）接管。**所以 `log.warning` 一直都發得出來。**
+
+⇒ 真實缺陷是**兩格不是一格**，而第二格更陰險：
+
+| | 修復前狀態 |
+|---|---|
+| `log.debug` / `log.info` | 全數丟棄，永遠不出現在 `docker logs`（上一節寫對了） |
+| `log.warning` 以上 | **發得出來，但 lastResort 沒有 formatter** ⇒ 光禿禿一行，沒有時間、沒有等級、沒有 logger 名 |
+
+一個「看得見但認不出來源」的訊號，比一個「完全看不見」的訊號更容易被誤讀成別的東西發的。
+**「沒有 handler」不等於「什麼都發不出來」**——這是 stdlib 的保底機制，不查就會像我一樣推過頭。
+
+### 採用的第三條路：只配置 `app` namespace，不碰 root
+
+新增 `app/logging_config.py`（獨立模組），`app/main.py` 在**模組層**呼叫一次 `configure_logging()`。
+
+三個設計判斷（diff 裡看不出來，故記於此）：
+
+1. **只掛 `app` 這個 logger，root 的 handlers 維持 `[]`、level 不動。**
+   本專案 6 個 logger 全部以 `app.` 開頭 ⇒ `app` 是恰好涵蓋且不多一分的邊界。
+   調 root 會讓 `httpx` 對每次鏡像請求印一行、`watchfiles` 印每次 reload 掃描。
+2. **`propagate` 維持 True（沒改 False）。** 改掉會讓 record 停在 `app` 層，
+   pytest 的 `caplog`（handler 掛在 root）收不到 ⇒ 四個測試檔的斷言會全部失效。
+   維持 True 不會重複輸出：root 沒 handler，而 lastResort 只在**整條鏈一個都沒有**時才啟用。
+3. **放模組層而非 lifespan 內。** `app.*` 在 import 期就可能發話
+   （`MirrorValidator.__init__` 的 `log.error`），lifespan 要等第一個 ASGI startup 事件。
+   放模組層，import 期訊息才不會落進「還沒有 handler」的空窗被 lastResort 以裸格式吞掉。
+
+### 等級依 `kept` 分流，不是選一個固定值
+
+| 情形 | 等級 | 為什麼不是別的 |
+|---|---|---|
+| `dropped == 0` | **完全不出聲** | 絕大多數情況。印了是純雜訊，且會讓「有丟棄」失去對比度 |
+| `kept > 0` | **INFO** | 正常但值得知道，使用者仍拿得到結果。用 DEBUG 生產永遠看不到；用 WARNING 則每次正常搜尋都噴警告，**久了沒人再看警告——那是把留痕做成雜訊** |
+| `kept == 0 且 dropped > 0` | **WARNING** | 本 BR 的核心：對外是空 `[]`，與「parser 壞了」「本來就沒結果」共用同一輸出。同時是**來源版型變更的第一個訊號** |
+
+**dispatcher 原本提議 WONTFIX**（理由：純診斷能力，沒有使用者會因此少等一秒）。
+handler 反對並補上一條使用者可感知路徑，dispatcher 採納：
+
+> `kept == 0` 是**來源版型變更的早期偵測器**。libgen 改版（例如把 md5 從 href 移到
+> data 屬性）⇒ 全站搜尋靜默回空 ⇒ 使用者感知「搜不到書」，而在此之前**沒有任何機制**
+> 會讓維護者知道要去看 parser。這條 log 把訊號從「使用者抱怨」提前到「維護者翻 log 就看到」。
+
+**而它剛好是「md5 觸發機率為 0」這件事的反面**——正因為現在是 0，任何一次非 0 都是強訊號不是雜訊。
+
+### 兩個分支必須一字不差共用 `dropped %d row(s)`（防呆，給未來讀者）
+
+handler 第一版寫 `dropped ALL 2 row(s)`，打斷 `test_li_all_rows_missing_md5_yields_empty_but_logged`
+的 `"dropped 2 row(s)" in msg` 斷言（`1 failed, 266 passed`）。
+
+它問「這條斷言原本在保護什麼」，答「**丟棄計數必須以機器可檢的穩定形式出現**」，
+判定該斷言正當 ⇒ **改自己的 code、不動斷言**。「整批丟光」改由**等級與句尾補述**表達。
+
+> ⚠ 想「讓訊息更清楚」而在計數句中間插字的人：你會做完、測試變紅、然後**可能去改斷言**。
+> 那條斷言不是在比對字串，它在保護「計數必須機器可檢」。要加語意請加在句尾或改等級。
+
+### dispatcher 獨立驗收（不採信 handler 任何數字）
+
+```
+三分支（容器內直接呼叫純函式，不重建假鏡像）
+  dropped=0        output=''                          ★完全不出聲
+  kept=3 dropped=2 INFO    ... dropped 2 row(s) ... kept 3
+  kept=0 dropped=3 WARNING ... dropped 3 row(s) ... kept 0 — the entire batch...
+  CONTROL_formatter_present=True                       ★裸行問題已修
+  CONTROL_has_logger_name='app.crawler.libgen_live'    ★看得出來源
+
+等級閘   app_effective=INFO / DEBUG_enabled=False / ROOT_HANDLERS=[] MUST_BE_EMPTY=True
+全套件   267 passed, 27 skipped   PYTEST_RC=0（獨立取得，未經管線）
+線上     search 0.201 / collections 0.0042 / jobs 0.0025   CONTROL /api/zzz → 404
+未重啟   RestartCount=0  StartedAt=2026-08-20T15:59:47.875482208Z（與派工時逐字相同）
+禁區     8 個 pathspec 全空   CONTROL[libgen_live.py] 非空 ★有鑑別力
+殘留     鏡像清單 9 個 / 5 enabled / FAKE_MIRROR_RESIDUE=0；假鏡像容器 0（CONTROL app=1）
+```
+
+### 這格仍未量的（明記，不假裝覆蓋）
+
+1. **`is` 適配器的 log 未經線上實測**——`_log_md5_drops` 兩個適配器共用，但只用 li 版型的假鏡像觸發過，is 分支只有單元覆蓋。
+2. **未證明真實鏡像現在會不會產出無 md5 的 row**——證明的是「遇到時會怎樣」，不是「會不會遇到」。實測母體仍是 0。
+3. **未量 `OPENSHELF_LOG_LEVEL` 在容器內的實際覆寫**（`docker-compose.yml` 是 handler 禁區，未加 env）。單元路徑經 `resolve_level` 覆蓋過，容器路徑未走過。
+
+### 順帶記一格 handler 回報的揭露缺陷（dispatcher 認可）
+
+**`docker logs --since` 的裸時間戳被解讀成 host local time，不是 UTC。**
+
+```
+NAIVE    "2026-08-21T00:16:38"   -> 4922 行
+EXPLICIT "2026-08-21T00:16:38Z"  ->   29 行     ← 差 8 小時
+```
+
+兩種解讀**共用同一個成功輸出**（都 exit 0、都印一堆行）。處方：`--since` 一律帶 `Z` 後綴。
+方向性註記：handler 的**負向**控制組問「視窗內 = 0」，視窗更寬而仍回 0 是**更強**的缺席主張，故不受影響；正向那格已用嚴謹 `Z` 視窗重取。
 
 ## 已驗收的部分（dispatcher 獨立重做，非採信 handler 自報）
 
