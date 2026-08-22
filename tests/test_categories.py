@@ -54,30 +54,31 @@ def test_category_cloud_queries():
     assert "python" in CATEGORY_CLOUD_SEARCH_QUERIES["cat_471"]
 
 
-def test_category_works_default_includes_local_and_cloud():
-    client, crawler = build_category_client()
+def test_category_works_reads_persisted_union_and_schedules_refresh():
+    client, refresher = build_category_client()
 
     with client:
         data = client.get("/api/categories/cat_880/works").json()
 
-    assert crawler.calls == 1
-    assert data["cloud_status"] == "success"
+    assert refresher.calls == 1
+    assert data["catalog_status"]["status"] == "never_refreshed"
+    assert data["catalog_status"]["refresh_scheduled"] is True
     assert data["total"] == len(data["items"]) == 3
     assert {item["availability_tier"] for item in data["items"]} == {0, 1}
 
 
-def test_category_works_distinguishes_empty_cloud_from_failure():
-    empty_client, empty_crawler = build_category_client(cloud_items=[])
+def test_category_works_distinguishes_empty_catalog_from_failed_refresh():
+    empty_client, empty_refresher = build_category_client(cloud_items=[])
     with empty_client:
         empty_data = empty_client.get("/api/categories/cat_880/works").json()
 
-    failed_client, failed_crawler = build_category_client(cloud_error=RuntimeError("offline"))
+    failed_client, failed_refresher = build_category_client(cloud_error=RuntimeError("offline"))
     with failed_client:
         failed_data = failed_client.get("/api/categories/cat_880/works").json()
 
-    assert empty_crawler.calls == failed_crawler.calls == 1
-    assert empty_data["cloud_status"] == "success"
-    assert failed_data["cloud_status"] == "failed"
+    assert empty_refresher.calls == failed_refresher.calls == 1
+    assert empty_data["catalog_status"]["status"] == "never_refreshed"
+    assert failed_data["catalog_status"]["status"] == "failed"
     assert empty_data["total"] == len(empty_data["items"]) == 2
     assert failed_data["total"] == len(failed_data["items"]) == 2
     assert {item["availability_tier"] for item in failed_data["items"]} == {0}
@@ -114,19 +115,48 @@ def build_category_client(cloud_items=None, cloud_error=None):
         def find_works_by_hashes(self, hash_values):
             return {}
 
-    class SpyCrawler:
+    class StubRemoteDAO:
+        def query_browseable(self, category_id, page, page_size):
+            items = [
+                {
+                    "work_id": item.work_id,
+                    "local_work_id": item.work_id,
+                    "title": item.title,
+                    "authors_display": item.authors_display,
+                    "publication_year": item.publication_year,
+                    "language": item.language,
+                    "format": item.format,
+                    "size_bytes": item.size_bytes,
+                    "md5": item.md5,
+                    "availability_tier": 0,
+                }
+                for item in local_items
+            ]
+            if not cloud_error:
+                items.extend({**item, "work_id": f"libgen_{item['md5']}", "availability_tier": 1} for item in remote_items)
+            return len(items), items
+
+        def get_status(self, category_id):
+            return {
+                "status": "failed" if cloud_error else "never_refreshed",
+                "last_success_at": None,
+                "error": str(cloud_error) if cloud_error else None,
+                "accumulated_total": 0,
+                "pages_fetched": 0,
+            }
+
+    class SpyRefresher:
         def __init__(self):
             self.calls = 0
 
-        async def search(self, query):
+        def schedule(self, category_id, query_term):
             self.calls += 1
-            if cloud_error:
-                raise cloud_error
-            return remote_items
+            return True
 
-    crawler = SpyCrawler()
+    refresher = SpyRefresher()
     fastapi_app = FastAPI()
     fastapi_app.include_router(category_routes.router)
     fastapi_app.dependency_overrides[category_routes.get_dao] = StubDAO
-    fastapi_app.dependency_overrides[category_routes.get_crawler] = lambda: crawler
-    return TestClient(fastapi_app), crawler
+    fastapi_app.dependency_overrides[category_routes.get_remote_catalog_dao] = StubRemoteDAO
+    fastapi_app.dependency_overrides[category_routes.get_refresher] = lambda: refresher
+    return TestClient(fastapi_app), refresher

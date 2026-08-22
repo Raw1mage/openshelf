@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 import threading
@@ -799,12 +800,26 @@ class CatalogDAO:
                 "SELECT * FROM category ORDER BY level ASC, sort_order ASC"
             ).fetchall()
             visible_rows = conn.execute(
-                self._VISIBLE_WORK_CATEGORY_SQL, self._visible_params
+                f"""
+                SELECT vwc.category_id,
+                       COALESCE('md5:' || lower(i.value), 'local:' || vwc.work_id) AS identity
+                FROM ({self._VISIBLE_WORK_CATEGORY_SQL}) vwc
+                LEFT JOIN identifier i
+                  ON i.work_id = vwc.work_id AND i.scheme = 'md5'
+                """,
+                self._visible_params,
+            ).fetchall()
+            remote_rows = conn.execute(
+                """
+                SELECT rcc.category_id, 'md5:' || lower(rci.md5) AS identity
+                FROM remote_catalog_category rcc
+                JOIN remote_catalog_item rci ON rci.catalog_id = rcc.catalog_id
+                """
             ).fetchall()
 
         direct: Dict[str, Set[str]] = {}
-        for r in visible_rows:
-            direct.setdefault(r["category_id"], set()).add(r["work_id"])
+        for r in [*visible_rows, *remote_rows]:
+            direct.setdefault(r["category_id"], set()).add(r["identity"])
 
         node_map: Dict[str, CategoryTreeNode] = {}
         roots: List[CategoryTreeNode] = []
@@ -850,17 +865,20 @@ class CatalogDAO:
         return works
 
     def _category_scope_ids(self, conn: sqlite3.Connection, category_id: str) -> List[str]:
-        """某分類架位的涵蓋範圍：自身 + 直接子節點。
-
-        `get_category`（徽章數字）與 `get_category_works`（實際列表）必須用
-        **同一個**範圍，否則徽章寫 12、點進去只有 9 本。
-        """
-        cat_ids = [category_id]
-        child_rows = conn.execute(
-            "SELECT category_id FROM category WHERE parent_id = ?", (category_id,)
+        """取得自身與完整子樹，供列表與 distinct union 統計共用。"""
+        rows = conn.execute(
+            """
+            WITH RECURSIVE subtree(category_id) AS (
+                SELECT category_id FROM category WHERE category_id = ?
+                UNION ALL
+                SELECT c.category_id FROM category c
+                JOIN subtree s ON c.parent_id = s.category_id
+            )
+            SELECT category_id FROM subtree
+            """,
+            (category_id,),
         ).fetchall()
-        cat_ids.extend([cr["category_id"] for cr in child_rows])
-        return cat_ids
+        return [row["category_id"] for row in rows]
 
     def get_category(self, category_id: str) -> Optional[CategoryRead]:
         """取得單一分類節點（works_count 與架位查詢同範圍、同可信判準）。"""
@@ -875,11 +893,19 @@ class CatalogDAO:
             placeholders = ",".join("?" for _ in cat_ids)
             count_row = conn.execute(
                 f"""
-                SELECT COUNT(DISTINCT vwc.work_id) AS works_count
-                FROM ({self._VISIBLE_WORK_CATEGORY_SQL}) vwc
-                WHERE vwc.category_id IN ({placeholders})
+                SELECT COUNT(DISTINCT identity) AS works_count FROM (
+                    SELECT COALESCE('md5:' || lower(i.value), 'local:' || vwc.work_id) AS identity
+                    FROM ({self._VISIBLE_WORK_CATEGORY_SQL}) vwc
+                    LEFT JOIN identifier i ON i.work_id = vwc.work_id AND i.scheme = 'md5'
+                    WHERE vwc.category_id IN ({placeholders})
+                    UNION
+                    SELECT 'md5:' || lower(rci.md5) AS identity
+                    FROM remote_catalog_category rcc
+                    JOIN remote_catalog_item rci ON rci.catalog_id = rcc.catalog_id
+                    WHERE rcc.category_id IN ({placeholders})
+                )
                 """,
-                tuple(self._visible_params) + tuple(cat_ids),
+                tuple(self._visible_params) + tuple(cat_ids) + tuple(cat_ids),
             ).fetchone()
 
             data = dict(row)

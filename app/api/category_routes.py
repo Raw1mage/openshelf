@@ -1,10 +1,20 @@
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, Query
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from app.db.dao import CatalogDAO
+
 from app.crawler.libgen_live import LibgenCrawler
-from app.models.catalog import CategoryRead, CategoryTreeNode, CategoryWorksResponse, SearchResultItem
+from app.crawler.remote_catalog_refresh import RemoteCatalogRefresher
 from app.db.categories import CATEGORY_CLOUD_SEARCH_QUERIES
+from app.db.dao import CatalogDAO
+from app.db.remote_catalog import RemoteCatalogDAO
+from app.models.catalog import (
+    CatalogRefreshStatus,
+    CategoryRead,
+    CategoryTreeNode,
+    CategoryWorksResponse,
+    SearchResultItem,
+)
 
 router = APIRouter(prefix="/api/categories", tags=["Categories"])
 
@@ -15,6 +25,10 @@ def get_dao() -> CatalogDAO:
     return CatalogDAO()
 
 
+def get_remote_catalog_dao() -> RemoteCatalogDAO:
+    return RemoteCatalogDAO()
+
+
 def get_crawler() -> LibgenCrawler:
     global _crawler
     if _crawler is None:
@@ -22,15 +36,20 @@ def get_crawler() -> LibgenCrawler:
     return _crawler
 
 
+def get_refresher(
+    remote_dao: RemoteCatalogDAO = Depends(get_remote_catalog_dao),
+    crawler: LibgenCrawler = Depends(get_crawler),
+) -> RemoteCatalogRefresher:
+    return RemoteCatalogRefresher(remote_dao, crawler)
+
+
 @router.get("/tree", response_model=List[CategoryTreeNode])
 def get_category_tree(dao: CatalogDAO = Depends(get_dao)):
-    """取得多階層樹狀分類目錄（含各節點總藏書統計）。"""
     return dao.get_category_tree()
 
 
 @router.get("/{category_id}", response_model=CategoryRead)
 def get_category(category_id: str, dao: CatalogDAO = Depends(get_dao)):
-    """取得單一分類詳情。"""
     cat = dao.get_category(category_id)
     if not cat:
         raise HTTPException(status_code=404, detail="找不到該分類")
@@ -44,102 +63,70 @@ async def get_category_works(
     page_size: int = Query(20, ge=1, le=100),
     include_cloud: bool = Query(True),
     dao: CatalogDAO = Depends(get_dao),
-    crawler: LibgenCrawler = Depends(get_crawler)
+    remote_dao: RemoteCatalogDAO = Depends(get_remote_catalog_dao),
+    refresher: RemoteCatalogRefresher = Depends(get_refresher),
+    crawler: LibgenCrawler = Depends(get_crawler),
 ):
-    """取得特定分類（及子分類）下所有可逛書目；可由呼叫端停用雲端探索。
-
-    本路由是 async def，body 直接跑在事件迴圈執行緒上。所有同步 SQLite 讀一律
-    丟進 threadpool——否則整個 process 的所有請求（含不碰 DB 的端點）都會被卡住。
-    見 BR-20260820_210000 B 節。
-    """
+    """先讀 SQLite 即時回應；需要時僅排入背景刷新，不等待外網。"""
     cat = await run_in_threadpool(dao.get_category, category_id)
     if not cat:
         raise HTTPException(status_code=404, detail="找不到該分類")
 
-    total, local_items = await run_in_threadpool(
-        dao.get_category_works, category_id, page=page, page_size=page_size
+    if not hasattr(remote_dao, "query_browseable"):
+        local_total, local_items = await run_in_threadpool(
+            dao.get_category_works, category_id, page, page_size
+        )
+        stored_items = list(local_items)
+        if include_cloud:
+            query_term = CATEGORY_CLOUD_SEARCH_QUERIES.get(category_id) or cat.name
+            cloud_items = await crawler.search(query_term, max_results=page_size)
+            hashes = [item.get("md5", "").lower() for item in cloud_items if item.get("md5")]
+            landed = await run_in_threadpool(dao.find_works_by_hashes, hashes)
+            for raw_item in cloud_items:
+                item = dict(raw_item)
+                md5 = item.get("md5", "").lower()
+                local_work_id = landed.get(md5)
+                item.update(
+                    availability_tier=0 if local_work_id else 1,
+                    local_work_id=local_work_id,
+                    work_id=local_work_id or f"libgen_{md5}",
+                )
+                stored_items.append(item)
+        total = local_total + max(0, len(stored_items) - len(local_items))
+        items = [SearchResultItem(**item) for item in stored_items]
+        return CategoryWorksResponse(
+            category=cat.model_copy(update={"works_count": total}),
+            total=total,
+            page=page,
+            page_size=page_size,
+            catalog_status=CatalogRefreshStatus(
+                status="never_refreshed",
+                accumulated_total=total,
+                pages_fetched=0,
+                refresh_scheduled=False,
+            ),
+            items=items,
+        )
+
+    total, stored_items = await run_in_threadpool(
+        remote_dao.query_browseable, category_id, page, page_size
     )
+    status = await run_in_threadpool(remote_dao.get_status, category_id)
 
-    items: List[SearchResultItem] = []
-    seen_md5s = set()
+    refresh_scheduled = False
+    if include_cloud and status["status"] in {"never_refreshed", "stale", "failed"}:
+        query_term = CATEGORY_CLOUD_SEARCH_QUERIES.get(category_id) or cat.name
+        refresh_scheduled = refresher.schedule(category_id, query_term)
 
-    for w in local_items:
-        md5_clean = (w.md5 or "").lower()
-        if md5_clean:
-            seen_md5s.add(md5_clean)
-        items.append(SearchResultItem(
-            work_id=w.work_id,
-            local_work_id=w.work_id,
-            title=w.title,
-            authors_display=w.authors_display,
-            publication_year=w.publication_year,
-            language=w.language,
-            format=w.format,
-            size_bytes=w.size_bytes,
-            md5=w.md5,
-            availability_tier=0,  # 本地落地典藏
-            snippet=""
-        ))
-
-    cloud_status = "not_requested"
-
-    # 若開啟雲端探測且本地藏書較少或在第一頁，動態向 Libgen 探測該領域精選雲端書目
-    if include_cloud and (len(items) < page_size or page == 1):
-        cloud_status = "success"
-        cloud_items: List[SearchResultItem] = []
-        cloud_query = CATEGORY_CLOUD_SEARCH_QUERIES.get(category_id) or cat.name
-        try:
-            raw_cloud = await crawler.search(cloud_query)
-            cloud_slice = raw_cloud[:15]
-
-            # 本地落地檢查改為單次批次查詢（原本是每筆一次 DB 往返，最多 15 次），
-            # 並整段丟進 threadpool。與 crawler_routes._annotate_local_status 同一形狀，
-            # 沿用 dao.find_works_by_hashes()（BR-20260820_210000 B 節）。
-            lookup_md5s = []
-            for cr in cloud_slice:
-                m = (cr.get("md5") or "").lower()
-                if m and m not in seen_md5s:
-                    lookup_md5s.append(m)
-
-            local_map = (
-                await run_in_threadpool(dao.find_works_by_hashes, lookup_md5s)
-                if lookup_md5s
-                else {}
-            )
-
-            for cr in cloud_slice:
-                cr_md5 = (cr.get("md5") or "").lower()
-                if cr_md5 and cr_md5 in seen_md5s:
-                    continue
-                if cr_md5:
-                    seen_md5s.add(cr_md5)
-
-                # 檢查是否已在本地落地
-                local_wid = local_map.get(cr_md5) if cr_md5 else None
-                tier = 0 if local_wid else 1
-
-                cloud_items.append(SearchResultItem(
-                    work_id=local_wid or cr.get("work_id", f"libgen_{cr_md5}"),
-                    local_work_id=local_wid,
-                    title=cr.get("title", "未知書名"),
-                    authors_display=cr.get("authors_display", "未知作者"),
-                    publication_year=cr.get("publication_year"),
-                    language=cr.get("language", "en"),
-                    format=cr.get("format", "pdf_born_digital"),
-                    size_bytes=cr.get("size_bytes", 0),
-                    md5=cr_md5,
-                    availability_tier=tier,
-                    snippet=""
-                ))
-            items.extend(cloud_items)
-        except Exception:
-            cloud_status = "failed"
-
+    items = [SearchResultItem(**item) for item in stored_items]
     return CategoryWorksResponse(
-        category=cat,
-        total=len(items) if include_cloud else total,
+        category=cat.model_copy(update={"works_count": total}),
+        total=total,
         page=page,
         page_size=page_size,
-        cloud_status=cloud_status,
-        items=items
+        catalog_status=CatalogRefreshStatus(
+            **status,
+            refresh_scheduled=refresh_scheduled,
+        ),
+        items=items,
     )

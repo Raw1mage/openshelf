@@ -260,45 +260,68 @@ class LibgenCrawler:
 
         return unique_candidates
 
-    async def search_live(self, query: str, max_results: int = 25) -> List[Dict[str, Any]]:
-        """執行智慧即時檢索：按優先級依序嘗試智慧候選詞，一旦命中即刻返回。"""
+    async def search_live(
+        self, query: str, max_results: int = 25, page: int = 1
+    ) -> List[Dict[str, Any]]:
+        """執行智慧即時檢索；page 是可重放、可驗證的來源游標。"""
+        result = await self._search_live_page(query, max_results, page)
+        return result["items"]
+
+    async def _search_live_page(
+        self, query: str, page_size: int, page: int
+    ) -> Dict[str, Any]:
         if not query or not query.strip():
-            return []
+            return {"items": [], "raw_row_count": 0}
         smart_candidates = self.generate_smart_queries(query)
-        
-        # TLS 驗證維持開啟：2026-08-20 實測 libgen.li / libgen.la 憑證在
-        # verify=True 下有效；唯一在 verify=True 失敗的 libgen.rocks 是自簽憑證
-        # 且內容已是法院查封頁，關閉驗證只會讓查封頁被當成書庫。
         async with httpx.AsyncClient(
             headers={"User-Agent": self.USER_AGENT},
             timeout=8.0,
-            follow_redirects=True
+            follow_redirects=True,
         ) as client:
-            # 依序執行候選詞檢索
             for term in smart_candidates:
-                items = await self._execute_single_search(client, term, max_results)
-                if items:
-                    return items
-            
-            return []
+                result = await self._execute_single_search(
+                    client, term, page_size, page, include_page_signal=True
+                )
+                if result["items"] or result["raw_row_count"]:
+                    return result
+            return {"items": [], "raw_row_count": 0}
 
     async def search(self, query: str, max_results: int = 25) -> List[Dict[str, Any]]:
-        """向存活鏡像發送搜尋請求（相容別名）。"""
-        return await self.search_live(query, max_results)
+        """向存活鏡像發送搜尋請求（相容別名，固定第一頁）。"""
+        return await self.search_live(query, max_results, page=1)
 
-    async def _execute_single_search(self, client: httpx.AsyncClient, query_term: str, max_results: int) -> List[Dict[str, Any]]:
+    async def search_page(
+        self, query: str, page: int = 1, page_size: int = 25
+    ) -> Dict[str, Any]:
+        result = await self._search_live_page(query, page_size, page)
+        return {
+            "items": result["items"],
+            "cursor": str(page),
+            "next_page": page + 1 if result["raw_row_count"] >= page_size else None,
+            "raw_row_count": result["raw_row_count"],
+            "provider_total": None,
+        }
+
+    async def _execute_single_search(
+        self, client: httpx.AsyncClient, query_term: str, max_results: int, page: int = 1,
+        include_page_signal: bool = False,
+    ) -> Any:
         """針對單一查詢詞向通過預檢驗證之存活鏡像發起 HTTP 檢索，支援 libgen_li 與 libgen_is 多適配器。"""
         encoded_query = urllib.parse.quote(query_term)
         # 同步 SQLite 讀移出事件迴圈執行緒（BR-20260820_210000 A 節）。
         mirrors = await self._resolve_active_mirrors_async()
+        failures = []
         for mirror in mirrors:
             if "library.lol" in mirror:
                 continue
             is_libgen_is = any(k in mirror for k in ("libgen.is", "libgen.rs", "libgen.st"))
             if is_libgen_is:
-                search_url = f"{mirror}/search.php?req={encoded_query}&open=0&res=25&view=simple&phrase=1&column=def"
+                search_url = (
+                    f"{mirror}/search.php?req={encoded_query}&open=0&res={max_results}"
+                    f"&view=simple&phrase=1&column=def&page={page}"
+                )
             else:
-                search_url = f"{mirror}/index.php?req={encoded_query}"
+                search_url = f"{mirror}/index.php?req={encoded_query}&page={page}"
 
             try:
                 resp = await client.get(search_url)
@@ -310,11 +333,25 @@ class LibgenCrawler:
                         results = await asyncio.to_thread(self._parse_libgen_is_html, resp.text, mirror)
                     else:
                         results = await asyncio.to_thread(self._parse_libgen_li_html, resp.text, mirror)
-                    if results:
-                        return results
-            except Exception:
-                continue
-        return []
+                    raw_row_count = await asyncio.to_thread(
+                        self._count_raw_result_rows, resp.text
+                    )
+                    page_result = {
+                        "items": results[:max_results],
+                        "raw_row_count": raw_row_count,
+                    }
+                    return page_result if include_page_signal else page_result["items"]
+                failures.append(f"{mirror}: HTTP {resp.status_code} or invalid search page")
+            except Exception as exc:
+                failures.append(f"{mirror}: {type(exc).__name__}: {exc}")
+        if failures:
+            raise RuntimeError("Libgen search failed across all mirrors: " + "; ".join(failures))
+        raise RuntimeError("Libgen search failed: no supported mirror was attempted")
+
+    @staticmethod
+    def _count_raw_result_rows(html_content: str) -> int:
+        table = BeautifulSoup(html_content, "html.parser").find("table")
+        return max(0, len(table.find_all("tr")) - 1) if table else 0
 
     # 丟棄留痕的等級門檻。「丟掉幾筆」與「整批都被丟掉」是兩種不同的事，
     # 不得共用同一個等級——理由見 _log_md5_drops。

@@ -26,16 +26,10 @@ class FileObjectRead(BaseModel):
     produced_at: Optional[str] = None
 
 
-# 下載協定種類：http 直鏈 / torrent (含 magnet) P2P
 DownloadProtocol = Literal["http", "torrent"]
 
 
 class TorrentSourceMixin(BaseModel):
-    """Torrent / Magnet 來源屬性（P2P 整合共用欄位）。
-
-    `peers_count` 為 None 表示「未知」（例如搜尋結果頁未揭露 Peer 數），
-    與 0（已查詢且確實無 Peer）語意不同，不得混用。
-    """
     torrent_url: Optional[str] = None
     magnet_uri: Optional[str] = None
     download_protocol: DownloadProtocol = "http"
@@ -56,7 +50,7 @@ class ManifestationRead(TorrentSourceMixin):
     manifestation_id: str
     work_id: str
     version: Optional[str] = "unknown"
-    format: Optional[str] = "unknown"  # 'pdf_born_digital', 'pdf_scanned', 'epub', etc.
+    format: Optional[str] = "unknown"
     origin: Literal["local", "external"] = "local"
     license_id: Optional[str] = None
     is_retrievable: int = 1
@@ -87,7 +81,7 @@ class WorkBase(BaseModel):
     language: Optional[str] = None
     publication_year: Optional[int] = None
     authors_display: Optional[str] = None
-    availability_tier: int = 0  # 0=已落地已解析, 1=已落地未解析, 2=可取得, 3=僅目錄
+    availability_tier: int = 0
 
 
 class WorkCreate(WorkBase):
@@ -110,6 +104,7 @@ class WorkDetailRead(WorkRead):
 
 class SearchResultItem(TorrentSourceMixin):
     work_id: str
+    local_work_id: Optional[str] = None
     title: str
     authors_display: Optional[str] = None
     publication_year: Optional[int] = None
@@ -117,6 +112,8 @@ class SearchResultItem(TorrentSourceMixin):
     format: Optional[str] = None
     size_bytes: Optional[int] = None
     md5: Optional[str] = None
+    extension: Optional[str] = None
+    mirror_links: List[str] = []
     availability_tier: int = 0
     snippet: Optional[str] = None
     progress_ratio: Optional[float] = None
@@ -211,13 +208,23 @@ class CategoryTreeNode(CategoryRead):
     children: List["CategoryTreeNode"] = []
 
 
+class CatalogRefreshStatus(BaseModel):
+    status: Literal["never_refreshed", "fresh", "stale", "refreshing", "failed"]
+    last_success_at: Optional[str] = None
+    error: Optional[str] = None
+    accumulated_total: int = 0
+    pages_fetched: int = 0
+    refresh_scheduled: bool = False
+
+
 class CategoryWorksResponse(BaseModel):
     category: CategoryRead
     total: int
     page: int
     page_size: int
-    cloud_status: Literal["not_requested", "success", "failed"]
+    catalog_status: CatalogRefreshStatus
     items: List[SearchResultItem]
+
 
 
 # === 自訂 Libgen 來源、鏡像驗證與 BR 發送 (Custom Libgen Mirrors & Pre-flight Validation) ===

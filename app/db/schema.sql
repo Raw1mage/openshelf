@@ -178,6 +178,68 @@ CREATE INDEX IF NOT EXISTS idx_work_category_cat ON work_category(category_id);
 -- CREATE TABLE IF NOT EXISTS 會靜默 no-op，緊接著的 CREATE INDEX 就會以
 -- "no such column" 中斷啟動。一律由 apply_column_migrations() 於 ALTER 後建立。
 
+CREATE TABLE IF NOT EXISTS remote_catalog_item (
+    catalog_id TEXT PRIMARY KEY,
+    md5 TEXT UNIQUE,
+    title TEXT NOT NULL,
+    authors_display TEXT,
+    publication_year INTEGER,
+    language TEXT,
+    format TEXT,
+    extension TEXT,
+    size_bytes INTEGER,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remote_catalog_source (
+    catalog_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    external_url TEXT,
+    mirror_links_json TEXT NOT NULL DEFAULT '[]',
+    torrent_url TEXT,
+    magnet_uri TEXT,
+    download_protocol TEXT NOT NULL DEFAULT 'http',
+    peers_count INTEGER,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (source, source_key),
+    FOREIGN KEY (catalog_id) REFERENCES remote_catalog_item(catalog_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS remote_catalog_category (
+    catalog_id TEXT NOT NULL,
+    category_id TEXT NOT NULL,
+    query_term TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (catalog_id, category_id),
+    FOREIGN KEY (catalog_id) REFERENCES remote_catalog_item(catalog_id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES category(category_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS remote_catalog_refresh (
+    refresh_id TEXT PRIMARY KEY,
+    category_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    query_term TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    last_success_at TEXT,
+    pages_fetched INTEGER NOT NULL DEFAULT 0,
+    items_seen INTEGER NOT NULL DEFAULT 0,
+    items_added INTEGER NOT NULL DEFAULT 0,
+    items_updated INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    cursor TEXT,
+    FOREIGN KEY (category_id) REFERENCES category(category_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_catalog_category_cat ON remote_catalog_category(category_id, catalog_id);
+CREATE INDEX IF NOT EXISTS idx_remote_catalog_item_last_seen ON remote_catalog_item(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_remote_catalog_refresh_category ON remote_catalog_refresh(category_id, started_at DESC);
+
 -- 系統與客製化設定 (System Settings)
 CREATE TABLE IF NOT EXISTS system_setting (
     key TEXT PRIMARY KEY,

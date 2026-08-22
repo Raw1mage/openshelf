@@ -1733,8 +1733,9 @@ function renderLibgenMirrorsList(mirrors) {
           <button class="btn btn-outline mirror-action-btn" onclick="handleDeleteMirror('${m.url}', event)" title="刪除此來源" style="color: #ef4444;">🗑️</button>
         </div>
       </div>
-    `;
-  }).join("");
+      `;
+    }).join("") + renderShelfPagination(data.page, data.page_size, data.total);
+
 
   // 綁定開關事件
   container.querySelectorAll(".mirror-toggle-checkbox").forEach(cb => {
@@ -3038,6 +3039,9 @@ async function saveQuickCollections() {
 let currentActiveCategoryId = "cat_800";
 let shelfRequestId = 0;
 let activeShelfController = null;
+let currentShelfPage = 1;
+let currentShelfPageSize = 20;
+let currentShelfContext = null;
 
 async function openBookstallModal() {
   const modal = document.getElementById("bookstallModal");
@@ -3122,20 +3126,23 @@ async function handleCategoryClick(catId, name, icon, breadcrumbs) {
   await loadShelfWorks(catId, name, icon, breadcrumbs);
 }
 
-async function loadShelfWorks(catId, name, icon, breadcrumbs) {
+async function loadShelfWorks(catId, name, icon, breadcrumbs, page = 1) {
   const requestId = ++shelfRequestId;
+
   if (activeShelfController) activeShelfController.abort();
   const controller = new AbortController();
   activeShelfController = controller;
   const isStale = () => requestId !== shelfRequestId || activeShelfController !== controller;
 
+  currentShelfPage = page;
+  currentShelfContext = { catId, name, icon, breadcrumbs };
   document.getElementById("shelfBreadcrumbs").innerText = breadcrumbs;
   document.getElementById("shelfTitle").innerHTML = `${icon || '📖'} ${escapeHtmlText(name)}`;
   const shelfGrid = document.getElementById("shelfGrid");
   shelfGrid.innerHTML = `<p style="color: var(--text-muted); padding: 2rem; grid-column: 1 / -1; text-align: center;">載入書架藏書中...</p>`;
 
   try {
-    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=1&page_size=50`, {
+    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=${page}&page_size=${currentShelfPageSize}`, {
       signal: controller.signal
     });
     if (!res.ok || isStale()) return;
@@ -3226,7 +3233,7 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs) {
           ${actionsHtml}
         </div>
       `;
-    }).join("");
+    }).join("") + renderShelfPagination(data.page, data.page_size, data.total);
   } catch (err) {
     if (isStale() || (err && err.name === "AbortError")) return;
     console.error("載入架位書籍失敗:", err);
@@ -3236,21 +3243,37 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs) {
   }
 }
 
+function renderShelfPagination(page, pageSize, total) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (totalPages <= 1) return "";
+  return `
+    <div data-shelf-pagination style="grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; gap: 0.75rem; padding: 0.75rem;">
+      <button class="btn btn-secondary" onclick="changeShelfPage(${page - 1})" ${page <= 1 ? "disabled" : ""}>上一頁</button>
+      <span style="color: var(--text-secondary);">第 ${page} / ${totalPages} 頁 · 共 ${total} 本</span>
+      <button class="btn btn-secondary" onclick="changeShelfPage(${page + 1})" ${page >= totalPages ? "disabled" : ""}>下一頁</button>
+    </div>
+  `;
+}
+
+function changeShelfPage(page) {
+  if (!currentShelfContext || page < 1) return;
+  return loadShelfWorks(
+    currentShelfContext.catId,
+    currentShelfContext.name,
+    currentShelfContext.icon,
+    currentShelfContext.breadcrumbs,
+    page
+  );
+}
+
 function updateShelfCategoryBadge(catId, data) {
   const badge = document.querySelector(`#node_${catId} > .tree-header .tree-badge`);
   if (!badge) return;
-  const localCount = data.category && Number.isInteger(data.category.works_count)
-    ? data.category.works_count
-    : Number.parseInt(badge.textContent, 10) || 0;
-  if (data.cloud_status === "success") {
-    badge.textContent = data.total;
-    badge.title = `所有可逛書目共 ${data.total} 本`;
-    return;
-  }
-  if (data.cloud_status === "failed") {
-    badge.textContent = localCount;
-    badge.title = `本地 ${localCount} 本；線上數量未知`;
-  }
+  badge.textContent = data.total;
+  const status = data.catalog_status && data.catalog_status.status;
+  badge.title = status === "failed"
+    ? `持久化可逛書目共 ${data.total} 本；背景刷新失敗，保留既有資料`
+    : `持久化可逛書目共 ${data.total} 本`;
 }
 
 // === 書架卡片「…」更多操作下拉選單控制 ===
@@ -3305,4 +3328,3 @@ document.addEventListener("click", (e) => {
   }
 });
 document.addEventListener("scroll", closeAllDropdowns, true);
-
