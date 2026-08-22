@@ -1,0 +1,69 @@
+[
+  {
+    "StepNumber": 1,
+    "ModuleRef": "A1",
+    "StepType": "initial",
+    "StepAction": "等待新 Work 或回填批次項目",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [6],
+    "LinkOutputNumber": [2],
+    "Condition": ["取得待分類書目 metadata"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 2,
+    "ModuleRef": "A2",
+    "StepType": "normal",
+    "StepAction": "執行邊界安全的規則分類",
+    "LinkOutputType": "or_diverge",
+    "LinkInputNumber": [1],
+    "LinkOutputNumber": [3, 4],
+    "Condition": ["零命中或多類衝突", "單一高信心葉節點"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 3,
+    "ModuleRef": "A3",
+    "StepType": "normal",
+    "StepAction": "呼叫模型並解析結構化 JSON",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [2],
+    "LinkOutputNumber": [4],
+    "Condition": ["收到合法結果或明確錯誤"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 4,
+    "ModuleRef": "A4",
+    "StepType": "normal",
+    "StepAction": "驗證 taxonomy；成功則原子寫入，失敗則標未分類／錯誤",
+    "LinkInputType": "convergence_or",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [2, 3],
+    "LinkOutputNumber": [5],
+    "Condition": ["分類狀態已可判定"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 5,
+    "ModuleRef": "A5",
+    "StepType": "normal",
+    "StepAction": "記錄來源、模型、prompt 版本、latency 與 token 統計",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [4],
+    "LinkOutputNumber": [6],
+    "Condition": ["觀測資料寫入完成"],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 6,
+    "ModuleRef": "A5",
+    "StepType": "normal",
+    "StepAction": "完成本項；批次取下一本，新書返回入庫流程",
+    "LinkOutputType": "track",
+    "LinkInputNumber": [5],
+    "LinkOutputNumber": [1],
+    "Condition": ["下一項可執行或流程結束"],
+    "SubGrafcet": []
+  }
+]

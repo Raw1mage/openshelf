@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "state": "implementing",
+  "profile": [],
+  "history": [
+    {
+      "from": null,
+      "to": "proposed",
+      "at": "2026-08-22T00:00:00+08:00",
+      "by": "coordinator",
+      "mode": "new",
+      "reason": "RCA confirmed fallback misclassification"
+    },
+    {
+      "from": "proposed",
+      "to": "designed",
+      "at": "2026-08-22T00:00:01+08:00",
+      "by": "coordinator",
+      "mode": "promote",
+      "reason": "User selected OpenAI-compatible API and import-time classification with backfill"
+    },
+    {
+      "from": "designed",
+      "to": "planned",
+      "at": "2026-08-22T00:00:02+08:00",
+      "by": "coordinator",
+      "mode": "promote",
+      "reason": "Implementation and validation tasks defined"
+    },
+    {
+      "from": "planned",
+      "to": "implementing",
+      "at": "2026-08-22T00:00:03+08:00",
+      "by": "coordinator",
+      "mode": "promote",
+      "reason": "User approved OpenAI-compatible hybrid classification and backfill"
+    }
+  ],
+  "tasks_contract": {"version": "1"}
+}

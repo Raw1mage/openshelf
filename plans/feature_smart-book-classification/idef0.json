@@ -1,0 +1,24 @@
+{
+  "diagram_title": "智慧圖書分類與回填 (A0)",
+  "node_reference": "A0",
+  "activities": [
+    {"id": "A1", "title": "建立分類輸入", "description": "正規化書名、作者、語言與 taxonomy", "decomposition": null},
+    {"id": "A2", "title": "規則高信心判斷", "description": "以安全詞元規則產生候選與信心", "decomposition": null},
+    {"id": "A3", "title": "模型低信心判斷", "description": "必要時呼叫 OpenAI-compatible API", "decomposition": null},
+    {"id": "A4", "title": "驗證與持久化", "description": "驗證 taxonomy ID 並原子寫入來源與版本", "decomposition": null},
+    {"id": "A5", "title": "批次回填與觀測", "description": "重分 legacy 資料並統計成功、未分類、錯誤", "decomposition": null}
+  ],
+  "arrows": [
+    {"id": "AR1", "source": "EXTERNAL", "target": "A1:input", "type": "input", "label": "書名、作者、語言、類型"},
+    {"id": "AR2", "source": "EXTERNAL", "target": "A1:control", "type": "control", "label": "分類樹與 prompt version"},
+    {"id": "AR3", "source": "A1:output", "target": "A2:input", "type": "input", "label": "正規化 metadata"},
+    {"id": "AR4", "source": "A2:output", "target": "A3:input", "type": "input", "label": "零命中或衝突候選"},
+    {"id": "AR5", "source": "A2:output", "target": "A4:input", "type": "input", "label": "規則高信心結果"},
+    {"id": "AR6", "source": "A3:output", "target": "A4:input", "type": "input", "label": "模型 JSON 結果或錯誤"},
+    {"id": "AR7", "source": "A4:output", "target": "A5:input", "type": "input", "label": "分類狀態與 provenance"},
+    {"id": "AR8", "source": "A5:output", "target": "EXTERNAL", "type": "output", "label": "乾淨分類、未分類清單與 token 統計"},
+    {"id": "AR9", "source": "EXTERNAL", "target": "A2:mechanism", "type": "mechanism", "label": "RuleClassifier"},
+    {"id": "AR10", "source": "EXTERNAL", "target": "A3:mechanism", "type": "mechanism", "label": "OpenAI-compatible endpoint"},
+    {"id": "AR11", "source": "EXTERNAL", "target": "A4:mechanism", "type": "mechanism", "label": "ClassificationService / CatalogDAO"}
+  ]
+}

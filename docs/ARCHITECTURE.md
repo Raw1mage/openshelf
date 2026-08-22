@@ -109,23 +109,30 @@
   - 混合書架 UI：同時呈現本地典藏（`💾` 直讀與原檔下載）與雲端精選（`🌐` 一鍵鏡像收書）。
   - **全純圖示化書卡動作區 (Pure Icon UI)**：所有標籤與按鈕全面去除文字，線上閱讀採用眼睛符號「`👁️`」正方形按鈕，收書採用「`📥`」，格式改為精緻圖示（`📕` 原生 PDF、`📷` 掃描 PDF、`📗` EPUB），搭配原生 Mouseover Tooltip 呈現說明文字；次要功能（`⭐`、`💾`、`ℹ️`）收納於「`⋯`」下拉選單中。
 
-### 3.11 `MobileResponsiveUI` (`app/static/css/style.css`, `app/static/js/app.js`)
+### 3.11 `SmartBookClassification` (`app/classification/`, `app/db/dao.py`, `script/backfill_classification.py`)
+- 採規則優先、模型補判的兩階段分類：入庫路徑只跑零網路規則層；零命中或多類衝突標記為 `pending`，由可重跑回填命令呼叫 OpenAI-compatible endpoint。
+- 模型輸出只接受 taxonomy 既有葉節點、最多兩類；非法 JSON、未知／父節點 ID、429/5xx 或逾時均不使用預設類別。
+- `work.classification_state` 區分 `pending|classified|unclassified|error|disabled`；`work_category.source` 保存 `rule|llm|legacy|manual` provenance。自動回填只替換自動來源，不覆寫人工分類。
+- 書攤分類樹、分類詳情與作品列表共用可信分類查詢：只顯示 `classified` 或 `manual` 關聯，避免舊 fallback 在回填前繼續對使用者可見。
+- 回填 CLI 預設唯讀 dry-run，開工前驗證正確 DB schema；分類／寫入例外與 `error|disabled` 有效判定失敗均回非零，但逐本隔離、保留狀態供後續重試。
+
+### 3.12 `MobileResponsiveUI` (`app/static/css/style.css`, `app/static/js/app.js`)
 - 手機行動端 RWD 深度優化（`@media (max-width: 768px)`）：
   - **全版獨立頁（Full-Screen Single Page Sheets）**：所有彈窗在手機上均為 100vw × 100dvh 全螢幕獨立頁，去除四周間距與外框圓角。
   - **兩階段下鑽導航（Two-Stage Drill-Down）**：線上書攤與個人書單在手機端採用「列表 ➔ 詳情」互斥切換架構。
   - **頂部與底欄最佳化**：各頁面頂部配置標準「⬅️」返回按鈕，搜尋過濾標籤列支援手機原生水平平滑滾動（Touch Scroll）。
 
-### 3.12 `AnchoredModalDialogSystem` (`app/static/js/modal-dialog.js`, `app/static/css/style.css`)
+### 3.13 `AnchoredModalDialogSystem` (`app/static/js/modal-dialog.js`, `app/static/css/style.css`)
 - **無原生 Message Box 規範**：全站禁止呼叫瀏覽器原生 `alert()`、`confirm()`、`prompt()`，一律由自訂 Promise-based Modal / Popover 接管。
 - **觸發點附著定位 (Trigger-Anchored Popover)**：
   - 依據觸發節點（Anchor Element）動態計算視窗座標，預設展開於觸發按鈕正下方（空間不足時自動向上翻轉），帶有指示箭頭並具備視窗邊界防溢出（Viewport Clamping）。
   - 手機版（螢幕寬度 $\le 640\text{px}$）或無錨點時自動降級為中央浮動 Modal 呈現。
 - **鍵盤與無障礙支援**：支援 `Enter` 快速確認、`Escape` 快速取消/關閉，並具備自動 Focus 與預設文字選取功能。
 
-### 3.13 `StealthScrollbarSystem` (`app/static/css/style.css`)
+### 3.14 `StealthScrollbarSystem` (`app/static/css/style.css`)
 - **低調隱藏式捲軸**：全站各欄位、側邊欄、彈窗與內容區採用深色同底色自訂捲軸（Webkit Scrollbar + CSS `scrollbar-width: thin; scrollbar-color: rgba(...) transparent;`），平時極度低調不搶視覺，懸停時微亮，徹底去除原生粗糙的亮色捲軸。
 
-### 3.14 `CustomLibgenMirrorsAndPreflightValidator` (`app/crawler/validator.py`, `app/api/settings_routes.py`, `app/db/dao.py`)
+### 3.15 `CustomLibgenMirrorsAndPreflightValidator` (`app/crawler/validator.py`, `app/api/settings_routes.py`, `app/db/dao.py`)
 - 自訂 Libgen 來源、鏡像管理與上線前預檢驗證管線（Pre-flight Validation & Scraper Adapters）：
   - **上線前強制預檢 (Pre-flight Validation Pipeline)**：任何新增或更新之 Libgen 鏡像來源，必須先經由 `MirrorValidator` 進行連線延遲探測與爬取適配器抽樣測試（提取書籍標題、MD5 等特徵），通過驗證（`verified`）後才正式被納入爬蟲檢索與直鏈解析輪替池，徹底阻絕無效或惡意來源污染系統。
   - **多適配器相容分流 (Scraper Adapters)**：支援 `libgen_li`（9 欄式）、`libgen_is`（10 欄式）與 `direct_gateway`（如 `library.lol`）多種解析器架構，動態自動適配。
@@ -133,6 +140,6 @@
   - **齒輪設定頁面 (Web UI)**：提供直觀的鏡像管理面板，支援一鍵批量預檢驗證、測速延遲標籤、啟用/停用開關、優先級排序、刪除與恢復原廠預設清單。
 
 ## 4. 驗證與測試 (Verification)
-- 測試套件路徑：`tests/test_storage.py`, `tests/test_pipeline.py`, `tests/test_api.py`, `tests/test_categories.py`, `tests/test_collections.py`, `tests/test_settings_and_validator.py`, `tests/test_e2e.py`。
-- 執行測試指令：`PYTHONPATH=. pytest -v tests/`。
+- 測試套件包含 `tests/test_smart_classification.py`，覆蓋規則邊界、模型契約、provenance、可信分類讀路徑、唯讀 dry-run、CLI 退出碼與 mutation 控制。
+- 完整測試指令：`.venv/bin/python -m pytest -q`；需現役服務的 E2E 測試維持 opt-in。
 
