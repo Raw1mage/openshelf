@@ -1,4 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from app.db.engine import DatabaseEngine
 from app.db.dao import CatalogDAO
 from app.models.catalog import WorkCreate
@@ -47,3 +52,64 @@ def test_category_cloud_queries():
     assert "cat_471" in CATEGORY_CLOUD_SEARCH_QUERIES
     assert "cat_090" in CATEGORY_CLOUD_SEARCH_QUERIES
     assert "python" in CATEGORY_CLOUD_SEARCH_QUERIES["cat_471"]
+
+
+def test_category_works_cloud_discovery_is_explicit():
+    from app.api import category_routes
+    from app.models.catalog import CategoryRead
+
+    local_items = [
+        SimpleNamespace(
+            work_id=f"local-{index}", title=f"本地藏書 {index}", authors_display="作者",
+            publication_year=2026, language="zh", format="epub", size_bytes=100,
+            md5=f"{index:032x}",
+        )
+        for index in range(2)
+    ]
+
+    class StubDAO:
+        def get_category(self, category_id):
+            return CategoryRead(
+                category_id=category_id, name="奇幻與魔法", slug="fantasy",
+                works_count=len(local_items),
+            )
+
+        def get_category_works(self, category_id, page=1, page_size=20):
+            return len(local_items), local_items
+
+        def find_works_by_hashes(self, hash_values):
+            return {}
+
+    class SpyCrawler:
+        def __init__(self):
+            self.calls = 0
+
+        async def search(self, query):
+            self.calls += 1
+            return [{
+                "md5": "f" * 32, "title": "雲端推薦", "authors_display": "遠端作者",
+                "publication_year": 2025, "language": "zh", "format": "pdf_born_digital",
+                "size_bytes": 200,
+            }]
+
+    crawler = SpyCrawler()
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(category_routes.router)
+    fastapi_app.dependency_overrides[category_routes.get_dao] = StubDAO
+    fastapi_app.dependency_overrides[category_routes.get_crawler] = lambda: crawler
+
+    with TestClient(fastapi_app) as client:
+        default_data = client.get("/api/categories/cat_880/works").json()
+        assert crawler.calls == 0
+        assert default_data["total"] == default_data["category"]["works_count"] == 2
+        assert len(default_data["items"]) == 2
+        assert {item["availability_tier"] for item in default_data["items"]} == {0}
+
+        cloud_data = client.get(
+            "/api/categories/cat_880/works", params={"include_cloud": "true"}
+        ).json()
+        assert crawler.calls == 1
+        assert cloud_data["total"] == 3
+        remote_items = [item for item in cloud_data["items"] if item["availability_tier"] == 1]
+        assert len(remote_items) == 1
+        assert remote_items[0]["md5"] == "f" * 32

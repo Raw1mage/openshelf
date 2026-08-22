@@ -42,11 +42,11 @@ async def get_category_works(
     category_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    include_cloud: bool = Query(True),
+    include_cloud: bool = Query(False),
     dao: CatalogDAO = Depends(get_dao),
     crawler: LibgenCrawler = Depends(get_crawler)
 ):
-    """取得特定分類（及子分類）下的所有藏書（支援本地典藏與漸進式雲端探索混合漫遊）。
+    """取得特定分類（及子分類）下的藏書；雲端探索須由呼叫端明確啟用。
 
     本路由是 async def，body 直接跑在事件迴圈執行緒上。所有同步 SQLite 讀一律
     丟進 threadpool——否則整個 process 的所有請求（含不碰 DB 的端點）都會被卡住。
@@ -133,7 +133,7 @@ async def get_category_works(
 
     return CategoryWorksResponse(
         category=cat,
-        total=len(items),
+        total=len(items) if include_cloud else total,
         page=page,
         page_size=page_size,
         items=items

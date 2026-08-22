@@ -105,8 +105,8 @@
 ### 3.10 `Bookstalls` & `OnDemandCategoryDiscovery` (`app/db/categories.py`, `app/api/category_routes.py`, `app/static/js/app.js`)
 - 多階層樹狀分類與線上書攤（`🏪`）：
   - 預設注入標準中文圖書多階層樹狀分類。
-  - 「有觸及再展開（On-Demand Discovery）」機制：架位藏書較少時，自動以該領域關鍵字向 Libgen 公網探測熱門書目。
-  - 混合書架 UI：同時呈現本地典藏（`💾` 直讀與原檔下載）與雲端精選（`🌐` 一鍵鏡像收書）。
+  - 「有觸及再展開（On-Demand Discovery）」機制：分類書架預設只呈現可信本地藏書；使用者明確點選 `🌐` 後，才以該領域關鍵字向 Libgen 公網探測推薦書目。
+  - 分流書架 UI：本地分類藏書（`💾` 直讀與原檔下載）與雲端推薦（`🌐` 一鍵鏡像收書）使用獨立檢視，不混用分類徽章語意。
   - **全純圖示化書卡動作區 (Pure Icon UI)**：所有標籤與按鈕全面去除文字，線上閱讀採用眼睛符號「`👁️`」正方形按鈕，收書採用「`📥`」，格式改為精緻圖示（`📕` 原生 PDF、`📷` 掃描 PDF、`📗` EPUB），搭配原生 Mouseover Tooltip 呈現說明文字；次要功能（`⭐`、`💾`、`ℹ️`）收納於「`⋯`」下拉選單中。
 
 ### 3.11 `SmartBookClassification` (`app/classification/`, `app/db/dao.py`, `script/backfill_classification.py`)
