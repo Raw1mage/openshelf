@@ -1,6 +1,7 @@
 # BR-20260821_060000 — `save_raw_bytes` / `save_parsed_markdown` 在 NAS 上留下的 `.tmp_<pid>` 孤兒沒有任何回收路徑
 
-- **Status**: **OPEN** —— 已坐實機制，當下孤兒數為 0，未修。
+- **Status**: **CLOSED** —— 已以 mtime lazy sweeper 回收 NAS `.tmp_*`，並補強 `.part` 掃描失敗態。
+- **Closed**: 2026-08-22 by ses_fe7b5cbadffeSlxj0dv1Z740O4
 - **Owner**: ses_fe7b5cbadffeSlxj0dv1Z740O4（值星官）
 - **Family**: `db-storage-substrate`
 - **Severity**: **低**（見「為何不是高」節）—— 機制坐實但當下無實例，且爆炸半徑已被
@@ -119,18 +120,18 @@ BR-20260821_040000 選項 C 新增的 `sweep_orphan_parts()` **不會回收這�
 
 ⇒ 修法不是「擴大 sweep 範圍」，這格需要獨立設計。
 
-## 四、修法選項（未裁決）
+## 四、處置與驗證
 
-| | 做什麼 | 代價 |
-|---|---|---|
-| **A** | `try/except` 包住寫入，失敗時 `unlink` 暫存檔 | 只涵蓋「例外被攔到」的情形；SIGKILL / 容器被殺仍留孤兒 |
-| **B** | 兩個函式也改寫本地 `staging_dir` 再 `_move_across_filesystems` 搬 NAS | 與選項 C 一致的架構，但 `save_parsed_markdown` 的內容通常只有數十 KB，多一次搬移不划算 |
-| **C** | `start()` 增加一次 NAS `.tmp_*` 掃除 | 每次啟動一次 NFS glob（成本可接受）；但**判準難定**——見上方「pid 會重用」 |
-| **D** | 不修，維持已知風險 | 當下孤兒數為 0，且爆炸半徑已被侷限；靠 BR 留痕讓下一個人知道它存在 |
+採用 **piggyback lazy sweeper**：`save_raw_bytes` / `save_parsed_markdown` 成功寫入後，依目錄分別節流掃描 `*.tmp_*`；只刪除 mtime 超過 6 小時的檔案。判準不使用 pid，避免 pid 重用與跨主機命名空間問題。
 
-**dispatcher 傾向 D**，理由與 BR-20260821_030000 的空 md5 殘留同型：機制坐實但無實例、
-無使用者可感知傷害、且修法的判準本身不乾淨（A 涵蓋不全、C 的 pid 判準會誤刪）。
-**但這格的裁決權在使用者，不在 dispatcher。**
+安全性依據不是「目前寫入很快」，而是 NFS 實測顯示寫入進行中 mtime 持續前進，故 mtime 是活躍寫入的心跳。掃描使用 `os.scandir`，目錄缺席或不可讀時會拋 `OSError` 並記 warning；不可使用對缺席目錄靜默回空的 `Path.glob`。
+
+落地 commits：
+
+- `24b6cba`：NAS `.tmp_*` lazy sweeper、分類來源明確的統計回傳與 21 條測試。
+- `1b591da`：`sweep_orphan_parts` 改用 `os.scandir`，補 ENOENT、EACCES 與健康目錄負向控制測試。
+
+Dispatcher 獨立驗證：完整套件 `307 passed, 27 skipped`；focused follow-up `19 passed`。將 `os.scandir` 退化回 `staging.glob("*.part")` 的 mutation 精準殺掉 2 條新測試，逐位元組還原後 focused 再次 19/19。兩個 commit 的實際檔案集均與授權 pathspec 完全相符。
 
 ## 五、沒驗證什麼（範圍邊界）
 
