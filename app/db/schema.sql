@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS work (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     merged_into TEXT,
+    -- 分類可判定狀態：pending|classified|unclassified|error|disabled
+    -- 預設 'pending' 而非 'unclassified'：新 Work 是「還沒判」不是「判不出」，
+    -- 兩者共用同一個值就無法把待辦撈出來重跑（feature_smart-book-classification）。
+    classification_state TEXT NOT NULL DEFAULT 'pending',
+    classified_at TEXT,
+    classification_error TEXT,
     FOREIGN KEY (merged_into) REFERENCES work(work_id)
 );
 
@@ -155,12 +161,22 @@ CREATE TABLE IF NOT EXISTS work_category (
     work_id TEXT NOT NULL,
     category_id TEXT NOT NULL,
     confidence REAL DEFAULT 1.0,
+    -- 分類 provenance：rule|llm|legacy。'legacy' 專指本功能上線前由舊
+    -- infer_categories_for_work() 寫入者（含已知錯誤的 cat_800+cat_850 fallback）。
+    source TEXT NOT NULL DEFAULT 'legacy',
+    model TEXT,
+    prompt_version TEXT,
+    assigned_at TEXT,
     PRIMARY KEY (work_id, category_id),
     FOREIGN KEY (work_id) REFERENCES work(work_id) ON DELETE CASCADE,
     FOREIGN KEY (category_id) REFERENCES category(category_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_work_category_cat ON work_category(category_id);
+-- 注：source / classification_state 的索引不得寫在此處，理由同 manifestation
+-- 上方那段註解：本檔經 executescript 執行於 DAO 欄位遷移之前，對舊 DB
+-- CREATE TABLE IF NOT EXISTS 會靜默 no-op，緊接著的 CREATE INDEX 就會以
+-- "no such column" 中斷啟動。一律由 apply_column_migrations() 於 ALTER 後建立。
 
 -- 系統與客製化設定 (System Settings)
 CREATE TABLE IF NOT EXISTS system_setting (

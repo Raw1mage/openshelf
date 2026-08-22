@@ -13,7 +13,10 @@ from app.models.catalog import (
     SearchResultItem, CollectionCreate, CollectionUpdate, CollectionRead,
     CollectionDetailRead, CollectionItemRead, CategoryRead, CategoryTreeNode
 )
-from app.db.categories import DEFAULT_CATEGORY_TREE, infer_categories_for_work
+from app.db.categories import DEFAULT_CATEGORY_TREE
+from app.classification.result import ClassificationOutcome, ClassificationSource, ClassificationState
+from app.classification.rules import RuleClassifier
+from app.classification.taxonomy import parent_of
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +152,23 @@ class CatalogDAO:
             ("download_protocol", "TEXT NOT NULL DEFAULT 'http'"),
             ("peers_count", "INTEGER"),
         ],
+        # feature_smart-book-classification：分類 provenance 與可判定狀態。
+        #
+        # 對既有 DB，work 的預設值刻意是 'pending' 而不是 'classified'：
+        # 既存的 42 筆全部由舊 infer_categories_for_work() 產生，其中包含已知
+        # 錯誤的 cat_800+cat_850 fallback。把它們標成 classified 等於宣稱那些
+        # 錯誤分類可信；標成 pending 才會被回填命令撿起來重判。
+        "work": [
+            ("classification_state", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("classified_at", "TEXT"),
+            ("classification_error", "TEXT"),
+        ],
+        "work_category": [
+            ("source", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ("model", "TEXT"),
+            ("prompt_version", "TEXT"),
+            ("assigned_at", "TEXT"),
+        ],
     }
 
     # 已完成一次性引導的 DB 路徑（process 層級）。
@@ -164,9 +184,16 @@ class CatalogDAO:
     _bootstrapped_paths: Set[str] = set()
     _bootstrap_lock = threading.Lock()
 
-    def __init__(self, engine: DatabaseEngine = None):
+    def __init__(self, engine: DatabaseEngine = None, bootstrap: bool = True):
+        """`bootstrap=False` 供離線唯讀工具使用（dry-run 回填、稽核腳本）。
+
+        引導本身是**寫入路徑**（ALTER / CREATE INDEX / INSERT）。一個宣稱唯讀的
+        呼叫端若仍走引導，它對錯誤路徑或 0-byte 檔案的第一個動作就是把它變成
+        一個看起來正常的空 DB——而那正是「指錯 DB」最該被聽見的時刻。
+        """
         self.engine = engine or DatabaseEngine()
-        self._ensure_bootstrapped()
+        if bootstrap:
+            self._ensure_bootstrapped()
 
     def _ensure_bootstrapped(self) -> bool:
         """每個 DB 路徑只在本 process 執行一次遷移與種子，回傳是否實際執行。
@@ -190,6 +217,8 @@ class CatalogDAO:
     _POST_MIGRATION_INDEXES: List[str] = [
         "CREATE INDEX IF NOT EXISTS idx_manifestation_protocol ON manifestation(download_protocol)",
         "CREATE INDEX IF NOT EXISTS idx_download_job_protocol ON download_job(download_protocol)",
+        "CREATE INDEX IF NOT EXISTS idx_work_classification_state ON work(classification_state)",
+        "CREATE INDEX IF NOT EXISTS idx_work_category_source ON work_category(source)",
     ]
 
     def apply_column_migrations(self) -> List[str]:
@@ -254,15 +283,14 @@ class CatalogDAO:
                     ("col_favorites", "我的最愛", "預設精選書單", "⭐", now, now)
                 )
 
-            # 對現有未分類的書籍進行自動分類關聯
-            works = conn.execute("SELECT work_id, title, authors_display FROM work").fetchall()
-            for w in works:
-                cat_ids = infer_categories_for_work(w["title"], w["authors_display"])
-                for cid in cat_ids:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO work_category (work_id, category_id) VALUES (?, ?)",
-                        (w["work_id"], cid)
-                    )
+            # 刻意不再於此處對既有 Work 做「自動分類補寫」。
+            #
+            # 這段原本每次 bootstrap 都跑一次 infer_categories_for_work()，而該函式
+            # 的零命中 fallback 會把任何判不出的書塞進 cat_800+cat_850——線上
+            # cat_850 的 13 筆全是作業系統與電腦架構書就是這條路徑反覆寫出來的。
+            # 移除 fallback 後這段就只剩「用規則補寫」的功能，而那件事現在由
+            # script/backfill_classification.py 負責（可 dry-run、可重跑、有 provenance）。
+            # 保留一個沉默的自動寫入點只會讓回填結果被下次啟動悄悄覆蓋回去。
 
     @staticmethod
     def generate_id(prefix: str) -> str:
@@ -301,13 +329,13 @@ class CatalogDAO:
                 """,
                 (wid, now)
             )
-            # 自動推導並寫入所屬分類
-            cat_ids = infer_categories_for_work(work_data.title, work_data.authors_display)
-            for cid in cat_ids:
-                conn.execute(
-                    "INSERT OR IGNORE INTO work_category (work_id, category_id) VALUES (?, ?)",
-                    (wid, cid)
-                )
+            # 入庫路徑只跑**零網路的規則層**。模型層不得在此呼叫：這條路徑
+            # 兩個呼叫端（routes.py:169 的預設 threadpool、download_worker.py:1086 的
+            # CapacityLimiter(4)）都是**共用池**，遠端 latency 會外溢到別人身上。
+            # 規則零命中時寫 pending，由回填命令消化。詳見
+            # app/classification/service.py 末尾的實測註解。
+            outcome = RuleClassifier().classify(work_data.title, work_data.authors_display)
+            self._write_classification(conn, wid, outcome, now)
         return wid
 
     def find_work_by_hash(self, hash_val: str) -> Optional[str]:
@@ -735,73 +763,292 @@ class CatalogDAO:
             return [r["collection_id"] for r in rows]
 
     # === 多階層分類體系與線上書攤 (Category & Shelf) DAO 實作 ===
+
+    # 三條讀路徑（樹統計 / 分類詳情 / 架位查詢）共用的「可信分類」子查詢。
+    #
+    # 為何必須只有一份：三條各自寫一次 WHERE 就是三份會漂移的副本，而漂移的
+    # 症狀是「書架上看得到這本、分類徽章的數字卻不算它」——只有使用者會發現。
+    #
+    # 判準：一個 work_category 列只有在下列任一成立時才對使用者可見——
+    #   1. 該 Work 的 classification_state = 'classified'：自動分類已判定且可信。
+    #      回填前的 legacy 列全部是 'pending'，於是那些被舊 fallback 塞進 cat_850
+    #      的作業系統書**從一開始就不出現在書攤上**，而不是等回填跑完才消失。
+    #   2. 該列 source = 'manual'：使用者手動指定的分類永遠可見，與自動狀態無關。
+    #
+    # 帶兩個 ? 參數，依序為 (CLASSIFIED, MANUAL)。
+    _VISIBLE_WORK_CATEGORY_SQL = """
+        SELECT wc.work_id AS work_id, wc.category_id AS category_id
+        FROM work_category wc
+        JOIN work w_cls ON w_cls.work_id = wc.work_id
+        WHERE w_cls.classification_state = ? OR wc.source = ?
+    """
+
+    @property
+    def _visible_params(self) -> Tuple[str, str]:
+        return (ClassificationState.CLASSIFIED, ClassificationSource.MANUAL)
+
     def get_category_tree(self) -> List[CategoryTreeNode]:
-        """取得多階層分類樹結構與各節點藏書數量。"""
+        """取得多階層分類樹結構與各節點藏書數量。
+
+        每一層的 works_count 都是該子樹的 **DISTINCT work_id** 數，不是子節點
+        計數的加總。同一本書命中兩個 sibling 葉節點（例：既是 cat_471 也是
+        cat_472）時，加總會把它算兩次，使父分類徽章大於點進去實際看到的本數。
+        """
         with self.engine.session() as conn:
-            # 取得各分類直接所屬或子分類的書籍數量
-            rows = conn.execute(
-                """
-                SELECT c.*, COUNT(DISTINCT wc.work_id) AS works_count
-                FROM category c
-                LEFT JOIN work_category wc ON c.category_id = wc.category_id
-                GROUP BY c.category_id
-                ORDER BY c.level ASC, c.sort_order ASC
-                """
+            cat_rows = conn.execute(
+                "SELECT * FROM category ORDER BY level ASC, sort_order ASC"
+            ).fetchall()
+            visible_rows = conn.execute(
+                self._VISIBLE_WORK_CATEGORY_SQL, self._visible_params
             ).fetchall()
 
-            node_map: Dict[str, CategoryTreeNode] = {}
-            roots: List[CategoryTreeNode] = []
+        direct: Dict[str, Set[str]] = {}
+        for r in visible_rows:
+            direct.setdefault(r["category_id"], set()).add(r["work_id"])
 
-            for r in rows:
-                r_dict = dict(r)
-                node = CategoryTreeNode(
-                    category_id=r_dict["category_id"],
-                    parent_id=r_dict["parent_id"],
-                    name=r_dict["name"],
-                    slug=r_dict["slug"],
-                    icon=r_dict["icon"],
-                    level=r_dict["level"],
-                    sort_order=r_dict["sort_order"],
-                    works_count=r_dict["works_count"],
-                    children=[]
-                )
-                node_map[node.category_id] = node
+        node_map: Dict[str, CategoryTreeNode] = {}
+        roots: List[CategoryTreeNode] = []
 
-            for node in node_map.values():
-                if node.parent_id and node.parent_id in node_map:
-                    node_map[node.parent_id].children.append(node)
-                elif not node.parent_id:
-                    roots.append(node)
+        for r in cat_rows:
+            r_dict = dict(r)
+            node = CategoryTreeNode(
+                category_id=r_dict["category_id"],
+                parent_id=r_dict["parent_id"],
+                name=r_dict["name"],
+                slug=r_dict["slug"],
+                icon=r_dict["icon"],
+                level=r_dict["level"],
+                sort_order=r_dict["sort_order"],
+                works_count=0,
+                children=[]
+            )
+            node_map[node.category_id] = node
 
-            # 累加父層分類的總藏書數量（包含子分類）
-            for root in roots:
-                self._rollup_counts(root)
+        for node in node_map.values():
+            if node.parent_id and node.parent_id in node_map:
+                node_map[node.parent_id].children.append(node)
+            elif not node.parent_id:
+                roots.append(node)
 
-            return roots
+        for root in roots:
+            self._rollup_distinct_works(root, direct)
 
-    def _rollup_counts(self, node: CategoryTreeNode) -> int:
-        child_sum = 0
+        return roots
+
+    def _rollup_distinct_works(
+        self, node: CategoryTreeNode, direct: Dict[str, Set[str]]
+    ) -> Set[str]:
+        """自底向上求子樹的 work_id 聯集，把基數寫回節點。
+
+        回傳集合而非數字，是因為「父的本數」不是「子的本數之和」——
+        必須先聯集再取基數，否則跨 sibling 的重複會被算兩次。
+        """
+        works: Set[str] = set(direct.get(node.category_id, ()))
         for child in node.children:
-            child_sum += self._rollup_counts(child)
-        node.works_count = max(node.works_count, child_sum)
-        return node.works_count
+            works |= self._rollup_distinct_works(child, direct)
+        node.works_count = len(works)
+        return works
+
+    def _category_scope_ids(self, conn: sqlite3.Connection, category_id: str) -> List[str]:
+        """某分類架位的涵蓋範圍：自身 + 直接子節點。
+
+        `get_category`（徽章數字）與 `get_category_works`（實際列表）必須用
+        **同一個**範圍，否則徽章寫 12、點進去只有 9 本。
+        """
+        cat_ids = [category_id]
+        child_rows = conn.execute(
+            "SELECT category_id FROM category WHERE parent_id = ?", (category_id,)
+        ).fetchall()
+        cat_ids.extend([cr["category_id"] for cr in child_rows])
+        return cat_ids
 
     def get_category(self, category_id: str) -> Optional[CategoryRead]:
-        """取得單一分類節點。"""
+        """取得單一分類節點（works_count 與架位查詢同範圍、同可信判準）。"""
         with self.engine.session() as conn:
             row = conn.execute(
-                """
-                SELECT c.*, COUNT(DISTINCT wc.work_id) AS works_count
-                FROM category c
-                LEFT JOIN work_category wc ON c.category_id = wc.category_id
-                WHERE c.category_id = ?
-                GROUP BY c.category_id
-                """,
-                (category_id,)
+                "SELECT * FROM category WHERE category_id = ?", (category_id,)
             ).fetchone()
             if not row:
                 return None
-            return CategoryRead(**dict(row))
+
+            cat_ids = self._category_scope_ids(conn, category_id)
+            placeholders = ",".join("?" for _ in cat_ids)
+            count_row = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT vwc.work_id) AS works_count
+                FROM ({self._VISIBLE_WORK_CATEGORY_SQL}) vwc
+                WHERE vwc.category_id IN ({placeholders})
+                """,
+                tuple(self._visible_params) + tuple(cat_ids),
+            ).fetchone()
+
+            data = dict(row)
+            data["works_count"] = count_row["works_count"]
+            return CategoryRead(**data)
+
+    # === 智慧分類 provenance 與狀態 (Classification) ===
+
+    def _write_classification(
+        self,
+        conn: sqlite3.Connection,
+        work_id: str,
+        outcome: ClassificationOutcome,
+        now: Optional[str] = None,
+    ) -> None:
+        """在**已開啟的交易內**原子替換某 Work 的自動分類與狀態。
+
+        「原子」在此有具體所指：刪除舊的自動分類（source in rule/llm/legacy）
+        與寫入新分類、更新狀態三者同屬一個 transaction。分開做會出現一個中間
+        態——舊分類已刪、新分類未寫——那一瞬間書會從架上消失。
+
+        失敗態（error/disabled）**不動既有分類**：保留原資料供重試，只更新
+        狀態欄。這是刻意的：把已知可能正確的 rule 分類因為一次網路逾時就清掉，
+        等於用「判不出」覆蓋「判得出」。
+
+        **manual 列完全不受本方法影響**：既不被 DELETE、也不被 UPSERT 改寫。
+        自動分類器對使用者手動指定的分類沒有寫入權——否則回填一次就静默
+        吃掉人工修正，而且沒有任何輸出會顯示這件事發生過。
+        """
+        now = now or self.current_iso()
+
+        conn.execute(
+            "UPDATE work SET classification_state = ?, classification_error = ?, "
+            "classified_at = ?, updated_at = ? WHERE work_id = ?",
+            (
+                outcome.state,
+                outcome.error,
+                now if outcome.is_classified else None,
+                now,
+                work_id,
+            ),
+        )
+
+        if outcome.state in (ClassificationState.ERROR, ClassificationState.DISABLED):
+            return
+
+        # classified / unclassified / pending 都代表「這次判定有結論」，
+        # 舊的自動分類一律讓位。unclassified 與 pending 的結論就是「沒有分類」。
+        # 只刪 AUTOMATIC（rule/llm/legacy）；manual 不在列。
+        auto_marks = ",".join("?" * len(ClassificationSource.AUTOMATIC))
+        conn.execute(
+            f"DELETE FROM work_category WHERE work_id = ? AND source IN ({auto_marks})",
+            (work_id,) + tuple(ClassificationSource.AUTOMATIC),
+        )
+
+        if not outcome.is_classified:
+            return
+
+        # 葉節點 + 其父節點都寫入。
+        #
+        # 為何不是「只寫葉節點」（推翻 design.md 的葉節點-only 契約）：
+        # `get_category()` (:800) 的 works_count 只 COUNT 自身 category_id、不含
+        # 子代，而該值經 CategoryWorksResponse.category 回給前端。只寫葉節點會
+        # 讓所有父分類的計數變 0。父 row 的 source 沿用同一個 provenance，
+        # 故回填時一併被上面的 DELETE 清掉，不會殘留。
+        rows = []
+        for cid in outcome.category_ids:
+            rows.append(cid)
+            parent = parent_of(cid)
+            if parent != cid:
+                rows.append(parent)
+
+        for cid in dict.fromkeys(rows):
+            # UPSERT 的 DO UPDATE 帶 WHERE：只有衝突列本身是自動來源時才改寫。
+            #
+            # 上面的 DELETE 已清掉所有自動列，所以這裡還會衝突的只剩一種可能：
+            # 同一個 (work_id, category_id) 上存在 manual 列。若沒有 WHERE，這行會
+            # 把使用者手動指定的 source 改成 rule/llm，provenance 就消失了。
+            # 衝突且為 manual 時這行退化成 no-op，manual 列原封不動保留。
+            auto_marks_upsert = ",".join("?" * len(ClassificationSource.AUTOMATIC))
+            conn.execute(
+                f"""
+                INSERT INTO work_category
+                    (work_id, category_id, confidence, source, model, prompt_version, assigned_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(work_id, category_id) DO UPDATE SET
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    model = excluded.model,
+                    prompt_version = excluded.prompt_version,
+                    assigned_at = excluded.assigned_at
+                WHERE work_category.source IN ({auto_marks_upsert})
+                """,
+                (
+                    work_id, cid, outcome.confidence, outcome.source,
+                    outcome.model, outcome.prompt_version, now,
+                ) + tuple(ClassificationSource.AUTOMATIC),
+            )
+
+    def apply_classification(self, work_id: str, outcome: ClassificationOutcome) -> None:
+        """對單一 Work 套用分類結果（自帶短 transaction）。"""
+        with self.engine.session() as conn:
+            self._write_classification(conn, work_id, outcome)
+
+    def get_work_classification_input(self, work_id: str) -> Optional[Dict[str, Any]]:
+        """取出分類器需要的欄位。找不到回 None（呼叫端負責分辨）。"""
+        with self.engine.session() as conn:
+            row = conn.execute(
+                "SELECT work_id, title, authors_display, language, work_type, "
+                "classification_state FROM work WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    # 回填的預設候選：**所有非 classified 的狀態**。
+    #
+    # unclassified / disabled 也在內（使用者裁決）：它們代表「用當時的 API 設定
+    # 與當時的模型判不出」，而那兩者都會變——補上 API key、換更強的模型之後，
+    # 這些書必須能被重試。把它們排除在預設之外，等於讓一次暫時性的環境缺陷
+    # 變成永久判決，而且使用者從介面上看不出還有這批書可救。
+    DEFAULT_BACKFILL_STATES: Tuple[str, ...] = tuple(
+        s for s in ClassificationState.ALL if s != ClassificationState.CLASSIFIED
+    )
+
+    def list_works_for_classification(
+        self, states: Optional[List[str]] = None, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """列出待分類的 Work。預設抓**所有非 classified**的狀態。
+
+        已 classified 的不入選（幂等）；其餘四種狀態都是「還沒有可信分類」，
+        都應在環境改善後可重試。
+        """
+        states = list(states) if states else list(self.DEFAULT_BACKFILL_STATES)
+        marks = ",".join("?" * len(states))
+        sql = (
+            "SELECT work_id, title, authors_display, language, work_type, "
+            f"classification_state FROM work WHERE classification_state IN ({marks}) "
+            "ORDER BY created_at ASC"
+        )
+        params: List[Any] = list(states)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self.engine.session() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def get_classification_stats(self) -> Dict[str, int]:
+        """各 classification_state 的筆數。零筆的狀態也會出現（值為 0）。
+
+        缺席的 key 與 0 不得共用同一個輸出：呼叫端要能分辨「這個狀態沒有書」
+        與「這個狀態名打錯了」。
+        """
+        stats = {s: 0 for s in ClassificationState.ALL}
+        with self.engine.session() as conn:
+            for r in conn.execute(
+                "SELECT classification_state AS s, COUNT(*) AS c FROM work GROUP BY 1"
+            ).fetchall():
+                stats[r["s"]] = r["c"]
+        return stats
+
+    def get_work_categories_detail(self, work_id: str) -> List[Dict[str, Any]]:
+        """某 Work 的所有分類關聯（含 provenance），供稽核與測試使用。"""
+        with self.engine.session() as conn:
+            rows = conn.execute(
+                "SELECT category_id, confidence, source, model, prompt_version, assigned_at "
+                "FROM work_category WHERE work_id = ? ORDER BY category_id",
+                (work_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_category_works(
         self,
@@ -809,23 +1056,26 @@ class CatalogDAO:
         page: int = 1,
         page_size: int = 20
     ) -> Tuple[int, List[SearchResultItem]]:
-        """取得特定分類架位（含其子分類）下的所有藏書。"""
-        with self.engine.session() as conn:
-            # 取得該分類及其所有子分類 ID
-            cat_ids = [category_id]
-            child_rows = conn.execute("SELECT category_id FROM category WHERE parent_id = ?", (category_id,)).fetchall()
-            cat_ids.extend([cr["category_id"] for cr in child_rows])
+        """取得特定分類架位（含其子分類）下的所有藏書。
 
+        只回傳**可信分類**（見 `_VISIBLE_WORK_CATEGORY_SQL`）：回填前那些被舊
+        fallback 塞進 cat_850 的作業系統書不得出現在書攤上。與 `get_category`
+        的徽章數字共用同一個判準與同一個範圍，否則徽章寫 1、點進去是空的。
+        """
+        with self.engine.session() as conn:
+            cat_ids = self._category_scope_ids(conn, category_id)
             placeholders = ",".join("?" for _ in cat_ids)
-            
+            visible_params = tuple(self._visible_params)
+
             # 計算總數
             count_sql = f"""
-                SELECT COUNT(DISTINCT w.work_id) AS total
-                FROM work w
-                JOIN work_category wc ON w.work_id = wc.work_id
-                WHERE wc.category_id IN ({placeholders})
+                SELECT COUNT(DISTINCT vwc.work_id) AS total
+                FROM ({self._VISIBLE_WORK_CATEGORY_SQL}) vwc
+                WHERE vwc.category_id IN ({placeholders})
             """
-            total = conn.execute(count_sql, tuple(cat_ids)).fetchone()["total"]
+            total = conn.execute(
+                count_sql, visible_params + tuple(cat_ids)
+            ).fetchone()["total"]
 
             # 分頁查詢
             offset = (page - 1) * page_size
@@ -839,14 +1089,14 @@ class CatalogDAO:
                      WHERE m.work_id = w.work_id LIMIT 1) AS size_bytes,
                     (SELECT id.value FROM identifier id WHERE id.work_id = w.work_id AND id.scheme = 'md5' LIMIT 1) AS md5
                 FROM work w
-                JOIN work_category wc ON w.work_id = wc.work_id
+                JOIN ({self._VISIBLE_WORK_CATEGORY_SQL}) vwc ON w.work_id = vwc.work_id
                 LEFT JOIN reading_state rs ON w.work_id = rs.work_id
-                WHERE wc.category_id IN ({placeholders})
+                WHERE vwc.category_id IN ({placeholders})
                 ORDER BY w.created_at DESC
                 LIMIT ? OFFSET ?
             """
-            params = list(cat_ids) + [page_size, offset]
-            rows = conn.execute(query_sql, tuple(params)).fetchall()
+            params = visible_params + tuple(cat_ids) + (page_size, offset)
+            rows = conn.execute(query_sql, params).fetchall()
 
             items = [
                 SearchResultItem(

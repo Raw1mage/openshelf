@@ -19,15 +19,31 @@ class DatabaseEngine:
     _bootstrapped_paths: Set[str] = set()
     _bootstrap_lock = threading.Lock()
 
-    def __init__(self, db_path: Union[str, Path] = None):
+    def __init__(
+        self,
+        db_path: Union[str, Path] = None,
+        bootstrap: bool = True,
+        readonly: bool = False,
+    ):
+        """`bootstrap=False` / `readonly=True` 供離線工具使用。
+
+        為何需要一條真的唯讀路徑：一個宣稱「不寫入」的 dry-run，若走的是同一個
+        會建表、會 ALTER、會 seed 的建構子，那句宣稱就只是註解——指錯 DB 時它會
+        安靜地把一個 0-byte 檔或錯誤路徑 bootstrap 成一個看起來正常的空 DB，然後
+        回報「0 本待回填」。`readonly=True` 讓任何寫入嘗試在 SQLite 層直接拋
+        `attempt to write a readonly database`，把「我沒寫」從承諾變成不變量。
+        """
+        self.readonly = readonly
         if db_path is None:
             storage = StorageManager()
             self.db_path = storage.get_db_path()
         else:
             self.db_path = Path(db_path)
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            if not readonly:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._ensure_initialized()
+        if bootstrap and not readonly:
+            self._ensure_initialized()
 
     def _ensure_initialized(self) -> bool:
         """每個 DB 路徑只在本 process 引導一次 schema，回傳是否實際執行。
@@ -46,6 +62,18 @@ class DatabaseEngine:
 
     def get_connection(self) -> sqlite3.Connection:
         """建立並配置 SQLite 連線。"""
+        if self.readonly:
+            # mode=ro 不會建檔（檔不存在即 OperationalError），且任何寫入會拋錯。
+            # journal_mode 不能在唯讀連線上改（那本身就是寫入），故略過。
+            conn = sqlite3.connect(
+                f"file:{self.db_path}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+                timeout=30.0,
+            )
+            conn.row_factory = sqlite3.Row
+            return conn
+
         conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
