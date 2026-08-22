@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import fnmatch
 import hashlib
 import asyncio
 import errno
@@ -271,8 +272,29 @@ class DownloadWorker:
         staging = self.pipeline.storage.staging_dir
         live = {self._get_part_path(j).name for j in self.jobs.values()}
         scanned = removed = kept = 0
+        # **為何是 `os.scandir` 而不是 `staging.glob("*.part")`**（實測）：
+        # `Path('/nonexistent').glob('*.part')` 回 `[]` 且**不拋任何例外**，
+        # 下方的 `except OSError` 分支因而永遠不可達。`os.scandir` 對同一個輸入
+        # 拋 `FileNotFoundError(errno=2)`。
+        #
+        # 這不是潔癖：上方 docstring 說明 `scanned` 是用來區分 `removed=0` 兩種意思的
+        # 控制組，而那個控制組只在「列舉失敗真的發得出聲」時才成立。用 `glob` 的話，
+        # `scanned=0` 自己又有了兩種意思（真的沒檔 / staging 不見了或不可讀）——
+        # **控制組自己也需要控制組**。
+        #
+        # 「目錄一定存在所以不可達」只在啟動那一瞬間成立：`ensure_directories()` 確實
+        # 無條件建了 staging，但 `_ensure_directories_once` 每個 process 只建一次且
+        # **刻意不做 `exists()` 複查**（見 `manager.py` 該函式的註解：目錄中途消失應該
+        # 大聲失敗，而不是靜默重建）。staging 落在 `/data/db/staging`，而 `/data/db` 是
+        # bind-mount：掛載掉了、remount 唯讀、或 `OPENSHELF_STAGING_DIR` 指向不存在的
+        # 路徑，都會踩到這條路徑。靜默地回「一切正常，沒有孤兒」而斷點續傳檔正在
+        # 無人回收地累積，正是同一個檔案既有設計立場要避免的。
         try:
-            entries = list(staging.glob("*.part"))
+            with os.scandir(staging) as it:
+                entries = [
+                    Path(e.path) for e in it
+                    if e.is_file() and fnmatch.fnmatch(e.name, "*.part")
+                ]
         except OSError as e:
             log.warning(
                 "暫存區掃描失敗，孤兒斷點檔未清理：%s: %s | dir=%s",

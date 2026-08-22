@@ -12,6 +12,7 @@
 """
 
 import errno
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -354,3 +355,91 @@ def test_delete_job_removes_staging_part(tmp_path):
 
     assert worker.delete_job(job.job_id) is True
     assert not part.exists()
+
+
+# --------------------------------------------------------------------------
+# 5. 掃除的失敗態必須發得出聲（控制組自己的控制組）
+#
+# 上面 `test_sweep_scanned_count_distinguishes_empty_from_broken` 用 `scanned`
+# 當控制組去區分 `removed=0` 的兩種意思。但那個控制組只在「列舉失敗真的會發出
+# 聲音」時才成立——若列舉器對不可讀的目錄靜默回空，`scanned=0` 自己又有了兩種
+# 意思（真的沒檔 / 目錄不見了），控制組就失去鑑別力。
+#
+# 這一節鎖的就是那一層：**證明 `except OSError` 分支可達**。
+# --------------------------------------------------------------------------
+
+def test_sweep_missing_staging_dir_is_loud_not_silent(tmp_path, caplog):
+    """staging 目錄不存在時必須走 `except OSError` 並記 warning，不得靜默回空。
+
+    `Path.glob()` 對不存在的目錄回 `[]` 且不拋例外，會讓那個 except 分支
+    **永遠不可達**；`os.scandir` 拋 `FileNotFoundError(errno=2)`。
+
+    這條路徑不是理論情境：staging 落在 `/data/db/staging`，而 `/data/db` 是
+    bind-mount。掛載掉、remount 唯讀、或 `OPENSHELF_STAGING_DIR` 指向不存在的
+    路徑都會踩到，而斷點續傳檔正在無人回收地累積。
+    """
+    worker = _make_worker(tmp_path)
+    staging = worker.pipeline.storage.staging_dir
+
+    # 先證明目錄本來是好的、掃得到東西——否則下面的 0 分不出是哪一種 0。
+    (staging / "job_ctl_aaaa.part").write_bytes(b"x")
+    baseline = worker.sweep_orphan_parts()
+    assert baseline["scanned"] == 1, f"控制組失效，掃除本來就看不到檔：{baseline}"
+
+    # 現在把目錄整個移除，模擬掛載掉 / 被外部刪除。
+    for child in staging.iterdir():
+        child.unlink()
+    staging.rmdir()
+    assert not staging.exists()
+
+    with caplog.at_level(logging.WARNING, logger="app.crawler.download_worker"):
+        stats = worker.sweep_orphan_parts()
+
+    assert stats == {"scanned": 0, "removed": 0, "kept": 0}, stats
+    assert any("暫存區掃描失敗" in r.message for r in caplog.records), (
+        "staging 目錄不存在卻沒有任何 warning——失敗態與「沒有孤兒」共用了同一個輸出"
+    )
+
+
+def test_sweep_unreadable_staging_dir_is_loud(tmp_path, caplog):
+    """權限不足時同樣必須出聲。
+
+    與上一條是**不同的 errno**（EACCES vs ENOENT），走的是同一個分支但
+    來源不同——只測 ENOENT 會讓「只對不存在的目錄出聲」這種半套修法通過。
+    """
+    worker = _make_worker(tmp_path)
+    staging = worker.pipeline.storage.staging_dir
+    (staging / "job_perm_bbbb.part").write_bytes(b"x")
+
+    original_mode = staging.stat().st_mode
+    os.chmod(staging, 0o000)
+    try:
+        if os.access(staging, os.R_OK):
+            pytest.skip("以 root 執行時權限位元不生效，本條無法建立失敗態")
+
+        with caplog.at_level(logging.WARNING, logger="app.crawler.download_worker"):
+            stats = worker.sweep_orphan_parts()
+
+        assert stats == {"scanned": 0, "removed": 0, "kept": 0}, stats
+        assert any("暫存區掃描失敗" in r.message for r in caplog.records), (
+            "staging 不可讀卻沒有任何 warning"
+        )
+    finally:
+        os.chmod(staging, original_mode)
+
+
+def test_sweep_healthy_dir_logs_no_warning(tmp_path, caplog):
+    """負向控制組：目錄正常時**不得**出現掃描失敗的 warning。
+
+    沒有這條，一個「無論如何都記 warning」的實作也會讓上面兩條通過。
+    """
+    worker = _make_worker(tmp_path)
+    (worker.pipeline.storage.staging_dir / "job_ok_cccc.part").write_bytes(b"x")
+
+    with caplog.at_level(logging.WARNING, logger="app.crawler.download_worker"):
+        stats = worker.sweep_orphan_parts()
+
+    assert stats["scanned"] == 1
+    assert not any("暫存區掃描失敗" in r.message for r in caplog.records), (
+        "目錄正常卻報了掃描失敗——warning 是恆真的，不具鑑別力"
+    )
