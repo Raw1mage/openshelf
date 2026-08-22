@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "state": "implementing",
+  "state": "verified",
   "profile": [],
   "history": [
     {
@@ -34,6 +34,14 @@
       "by": "coordinator",
       "mode": "promote",
       "reason": "User approved OpenAI-compatible hybrid classification and backfill"
+    },
+    {
+      "from": "implementing",
+      "to": "verified",
+      "at": "2026-08-23T00:36:00+08:00",
+      "by": "coordinator",
+      "mode": "promote",
+      "reason": "VANS R3 cleared; production backfill persisted 42 candidates and post-apply controls passed"
     }
   ],
   "tasks_contract": {"version": "1"}

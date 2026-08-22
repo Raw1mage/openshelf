@@ -38,6 +38,7 @@
 
 - 新書：入庫完成後只跑本地規則；低信心項目標為 `pending`，不阻斷檔案保存與索引。
 - 回填：可重跑的批次命令逐本呼叫模型並持久化；支援唯讀 dry-run、schema 驗證與統計輸出。
+- 現役回填：2026-08-23 使用 `accounts.json` 的 GMICloud 帳號，在 process environment 暫時注入 API key（不落檔），以 `openai/gpt-5.6-sol` 回填 42 個 pending Work；寫入前建立 SQLite backup 並通過 `integrity_check`。
 - 觀測：`classified|unclassified` 視為有效判定；`error|disabled` 保留狀態供重試並讓 CLI 回非零。記錄來源、模型與 prompt 版本，不記 API key。
 
 ## Failure Policy

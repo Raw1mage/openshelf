@@ -12,9 +12,9 @@
 
 ### Phase 3: 既有資料回填
 - [x] Task 3.1: 建立可重跑、可 dry-run 的 42 本 legacy 分類回填流程。
-- [~] Task 3.2: 程式與隔離資料庫已驗證錯誤 legacy 分類不可見且可回填；現役 42 本尚未 dry-run／apply。
+- [x] Task 3.2: 現役資料完成備份與回填；42 個 pending 全部持久化，連同新增作品共 43 本皆為 classified。
 
 ### Phase 4: 驗證與文件
 - [x] Task 4.1: 加入規則、LLM response、失敗態、回填與 mutation 測試。
-- [~] Task 4.2: 全套件 422 passed / 27 skipped 與 CLI 控制組已通過；現役 API／資料庫回填控制待部署階段執行。
+- [x] Task 4.2: 全套件 422 passed / 27 skipped；現役回填後第二次 dry-run 為 0 candidates、DB byte-identical，OS／電腦架構書在 cat_850 命中 0。
 - [x] Task 4.3: 同步 `docs/ARCHITECTURE.md` 與 event log。
