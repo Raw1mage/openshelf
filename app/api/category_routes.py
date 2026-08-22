@@ -42,11 +42,11 @@ async def get_category_works(
     category_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    include_cloud: bool = Query(False),
+    include_cloud: bool = Query(True),
     dao: CatalogDAO = Depends(get_dao),
     crawler: LibgenCrawler = Depends(get_crawler)
 ):
-    """取得特定分類（及子分類）下的藏書；雲端探索須由呼叫端明確啟用。
+    """取得特定分類（及子分類）下所有可逛書目；可由呼叫端停用雲端探索。
 
     本路由是 async def，body 直接跑在事件迴圈執行緒上。所有同步 SQLite 讀一律
     丟進 threadpool——否則整個 process 的所有請求（含不碰 DB 的端點）都會被卡住。
@@ -81,8 +81,12 @@ async def get_category_works(
             snippet=""
         ))
 
+    cloud_status = "not_requested"
+
     # 若開啟雲端探測且本地藏書較少或在第一頁，動態向 Libgen 探測該領域精選雲端書目
     if include_cloud and (len(items) < page_size or page == 1):
+        cloud_status = "success"
+        cloud_items: List[SearchResultItem] = []
         cloud_query = CATEGORY_CLOUD_SEARCH_QUERIES.get(category_id) or cat.name
         try:
             raw_cloud = await crawler.search(cloud_query)
@@ -114,7 +118,7 @@ async def get_category_works(
                 local_wid = local_map.get(cr_md5) if cr_md5 else None
                 tier = 0 if local_wid else 1
 
-                items.append(SearchResultItem(
+                cloud_items.append(SearchResultItem(
                     work_id=local_wid or cr.get("work_id", f"libgen_{cr_md5}"),
                     local_work_id=local_wid,
                     title=cr.get("title", "未知書名"),
@@ -127,14 +131,15 @@ async def get_category_works(
                     availability_tier=tier,
                     snippet=""
                 ))
+            items.extend(cloud_items)
         except Exception:
-            # 雲端網路異常時優雅降級，不影響本地展示
-            pass
+            cloud_status = "failed"
 
     return CategoryWorksResponse(
         category=cat,
         total=len(items) if include_cloud else total,
         page=page,
         page_size=page_size,
+        cloud_status=cloud_status,
         items=items
     )

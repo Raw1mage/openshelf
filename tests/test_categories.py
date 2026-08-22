@@ -54,7 +54,36 @@ def test_category_cloud_queries():
     assert "python" in CATEGORY_CLOUD_SEARCH_QUERIES["cat_471"]
 
 
-def test_category_works_cloud_discovery_is_explicit():
+def test_category_works_default_includes_local_and_cloud():
+    client, crawler = build_category_client()
+
+    with client:
+        data = client.get("/api/categories/cat_880/works").json()
+
+    assert crawler.calls == 1
+    assert data["cloud_status"] == "success"
+    assert data["total"] == len(data["items"]) == 3
+    assert {item["availability_tier"] for item in data["items"]} == {0, 1}
+
+
+def test_category_works_distinguishes_empty_cloud_from_failure():
+    empty_client, empty_crawler = build_category_client(cloud_items=[])
+    with empty_client:
+        empty_data = empty_client.get("/api/categories/cat_880/works").json()
+
+    failed_client, failed_crawler = build_category_client(cloud_error=RuntimeError("offline"))
+    with failed_client:
+        failed_data = failed_client.get("/api/categories/cat_880/works").json()
+
+    assert empty_crawler.calls == failed_crawler.calls == 1
+    assert empty_data["cloud_status"] == "success"
+    assert failed_data["cloud_status"] == "failed"
+    assert empty_data["total"] == len(empty_data["items"]) == 2
+    assert failed_data["total"] == len(failed_data["items"]) == 2
+    assert {item["availability_tier"] for item in failed_data["items"]} == {0}
+
+
+def build_category_client(cloud_items=None, cloud_error=None):
     from app.api import category_routes
     from app.models.catalog import CategoryRead
 
@@ -66,6 +95,11 @@ def test_category_works_cloud_discovery_is_explicit():
         )
         for index in range(2)
     ]
+    remote_items = cloud_items if cloud_items is not None else [{
+        "md5": "f" * 32, "title": "雲端推薦", "authors_display": "遠端作者",
+        "publication_year": 2025, "language": "zh", "format": "pdf_born_digital",
+        "size_bytes": 200,
+    }]
 
     class StubDAO:
         def get_category(self, category_id):
@@ -86,30 +120,13 @@ def test_category_works_cloud_discovery_is_explicit():
 
         async def search(self, query):
             self.calls += 1
-            return [{
-                "md5": "f" * 32, "title": "雲端推薦", "authors_display": "遠端作者",
-                "publication_year": 2025, "language": "zh", "format": "pdf_born_digital",
-                "size_bytes": 200,
-            }]
+            if cloud_error:
+                raise cloud_error
+            return remote_items
 
     crawler = SpyCrawler()
     fastapi_app = FastAPI()
     fastapi_app.include_router(category_routes.router)
     fastapi_app.dependency_overrides[category_routes.get_dao] = StubDAO
     fastapi_app.dependency_overrides[category_routes.get_crawler] = lambda: crawler
-
-    with TestClient(fastapi_app) as client:
-        default_data = client.get("/api/categories/cat_880/works").json()
-        assert crawler.calls == 0
-        assert default_data["total"] == default_data["category"]["works_count"] == 2
-        assert len(default_data["items"]) == 2
-        assert {item["availability_tier"] for item in default_data["items"]} == {0}
-
-        cloud_data = client.get(
-            "/api/categories/cat_880/works", params={"include_cloud": "true"}
-        ).json()
-        assert crawler.calls == 1
-        assert cloud_data["total"] == 3
-        remote_items = [item for item in cloud_data["items"] if item["availability_tier"] == 1]
-        assert len(remote_items) == 1
-        assert remote_items[0]["md5"] == "f" * 32
+    return TestClient(fastapi_app), crawler

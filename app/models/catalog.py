@@ -216,6 +216,7 @@ class CategoryWorksResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    cloud_status: Literal["not_requested", "success", "failed"]
     items: List[SearchResultItem]
 
 

@@ -3122,7 +3122,7 @@ async function handleCategoryClick(catId, name, icon, breadcrumbs) {
   await loadShelfWorks(catId, name, icon, breadcrumbs);
 }
 
-async function loadShelfWorks(catId, name, icon, breadcrumbs, includeCloud = false) {
+async function loadShelfWorks(catId, name, icon, breadcrumbs) {
   const requestId = ++shelfRequestId;
   if (activeShelfController) activeShelfController.abort();
   const controller = new AbortController();
@@ -3130,33 +3130,22 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs, includeCloud = fal
   const isStale = () => requestId !== shelfRequestId || activeShelfController !== controller;
 
   document.getElementById("shelfBreadcrumbs").innerText = breadcrumbs;
-  document.getElementById("shelfTitle").innerHTML = includeCloud
-    ? `🌐 ${escapeHtmlText(name)} · 雲端推薦`
-    : `${icon || '📖'} ${escapeHtmlText(name)}`;
-  const discoveryBtn = document.getElementById("shelfDiscoveryBtn");
-  if (discoveryBtn) {
-    discoveryBtn.textContent = includeCloud ? "📚" : "🌐";
-    discoveryBtn.title = includeCloud ? "返回此分類的本地藏書" : "探索此分類的雲端推薦";
-    discoveryBtn.onclick = () => loadShelfWorks(catId, name, icon, breadcrumbs, !includeCloud);
-  }
+  document.getElementById("shelfTitle").innerHTML = `${icon || '📖'} ${escapeHtmlText(name)}`;
   const shelfGrid = document.getElementById("shelfGrid");
   shelfGrid.innerHTML = `<p style="color: var(--text-muted); padding: 2rem; grid-column: 1 / -1; text-align: center;">載入書架藏書中...</p>`;
 
   try {
-    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=1&page_size=50&include_cloud=${includeCloud}`, {
+    const res = await fetch(`${BASE_PATH}/api/categories/${catId}/works?page=1&page_size=50`, {
       signal: controller.signal
     });
     if (!res.ok || isStale()) return;
     const data = await res.json();
     if (isStale()) return;
-    const displayItems = includeCloud
-      ? data.items.filter(w => w.availability_tier === 1 && !w.local_work_id)
-      : data.items;
+    updateShelfCategoryBadge(catId, data);
+    const displayItems = data.items;
 
     if (displayItems.length === 0) {
-      shelfGrid.innerHTML = includeCloud
-        ? `<div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 3rem;"><p style="font-size: 1.1rem;">目前沒有雲端推薦</p><p style="font-size: 0.85rem; margin-top: 0.5rem;">可返回分類藏書繼續瀏覽本地典藏</p></div>`
-        : `<div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 3rem;"><p style="font-size: 1.1rem;">此書架目前尚無藏書</p><p style="font-size: 0.85rem; margin-top: 0.5rem;">您可以透過手動上傳或鏡像收書充實此架位典藏</p></div>`;
+      shelfGrid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 3rem;"><p style="font-size: 1.1rem;">此書架目前尚無可逛書目</p><p style="font-size: 0.85rem; margin-top: 0.5rem;">您可以透過手動上傳或鏡像收書充實此架位典藏</p></div>`;
       return;
     }
 
@@ -3244,6 +3233,23 @@ async function loadShelfWorks(catId, name, icon, breadcrumbs, includeCloud = fal
     shelfGrid.innerHTML = `<p style="color: #ef4444; padding: 2rem; grid-column: 1 / -1;">載入失敗</p>`;
   } finally {
     if (!isStale()) activeShelfController = null;
+  }
+}
+
+function updateShelfCategoryBadge(catId, data) {
+  const badge = document.querySelector(`#node_${catId} > .tree-header .tree-badge`);
+  if (!badge) return;
+  const localCount = data.category && Number.isInteger(data.category.works_count)
+    ? data.category.works_count
+    : Number.parseInt(badge.textContent, 10) || 0;
+  if (data.cloud_status === "success") {
+    badge.textContent = data.total;
+    badge.title = `所有可逛書目共 ${data.total} 本`;
+    return;
+  }
+  if (data.cloud_status === "failed") {
+    badge.textContent = localCount;
+    badge.title = `本地 ${localCount} 本；線上數量未知`;
   }
 }
 

@@ -18,9 +18,14 @@ const source = fs.readFileSync(process.argv[1], "utf8");
 
 function createHarness() {
   const elements = new Map();
-  for (const id of ["shelfBreadcrumbs", "shelfTitle", "shelfDiscoveryBtn", "shelfGrid"]) {
+  for (const id of ["shelfBreadcrumbs", "shelfTitle", "shelfGrid"]) {
     elements.set(id, { innerText: "", innerHTML: "", textContent: "", title: "", onclick: null });
   }
+  const badges = new Map([
+    ["cat_a", { textContent: "1", title: "共 1 本藏書" }],
+    ["cat_b", { textContent: "2", title: "共 2 本藏書" }],
+    ["cat_failed", { textContent: "4", title: "共 4 本藏書" }],
+  ]);
   const requests = [];
   const context = {
     AbortController,
@@ -35,6 +40,10 @@ function createHarness() {
     document: {
       addEventListener() {},
       getElementById(id) { return elements.get(id); },
+      querySelector(selector) {
+        const match = selector.match(/^#node_(.+) > \.tree-header \.tree-badge$/);
+        return match ? badges.get(match[1]) : null;
+      },
       querySelectorAll() { return []; },
     },
     fetch(url, options = {}) {
@@ -43,11 +52,19 @@ function createHarness() {
   };
   vm.createContext(context);
   vm.runInContext(source, context);
-  return { context, elements, requests };
+  return { context, elements, badges, requests };
 }
 
-function response(items) {
-  return { ok: true, json: async () => ({ items }) };
+function response(items, total, cloudStatus, localCount) {
+  return {
+    ok: true,
+    json: async () => ({
+      items,
+      total,
+      cloud_status: cloudStatus,
+      category: { works_count: localCount },
+    }),
+  };
 }
 
 function localItem(title, workId) {
@@ -75,60 +92,57 @@ function remoteItem(title, md5) {
   };
 }
 
-function snapshot(elements) {
+function snapshot(elements, badges) {
   const title = elements.get("shelfTitle");
-  const button = elements.get("shelfDiscoveryBtn");
   const grid = elements.get("shelfGrid");
   return {
     title: title.innerHTML,
-    buttonText: button.textContent,
-    buttonTitle: button.title,
     grid: grid.innerHTML,
+    badges: Array.from(badges.entries()),
   };
 }
 
 async function categorySwitchRace() {
-  const { context, elements, requests } = createHarness();
+  const { context, elements, badges, requests } = createHarness();
   const first = context.loadShelfWorks("cat_a", "分類 A", "A", "分類 A");
   const second = context.loadShelfWorks("cat_b", "分類 B", "B", "分類 B");
   assert.equal(requests.length, 2);
   assert.equal(requests[0].options.signal.aborted, true, "new request must abort the previous fetch");
 
-  requests[1].resolve(response([localItem("B 書籍", "work-b")]));
+  requests[1].resolve(response([
+    localItem("B 本地書籍", "work-b"),
+    remoteItem("B 線上書籍", "b".repeat(32)),
+  ], 4, "success", 2));
   await second;
-  const current = snapshot(elements);
+  const current = snapshot(elements, badges);
   assert.match(current.title, /分類 B/);
-  assert.match(current.grid, /B 書籍/);
+  assert.match(current.grid, /B 本地書籍/);
+  assert.match(current.grid, /B 線上書籍/);
+  assert.equal(badges.get("cat_b").textContent, 4);
+  assert.equal(badges.get("cat_b").title, "所有可逛書目共 4 本");
+  assert.equal(badges.get("cat_a").textContent, "1");
 
-  requests[0].resolve(response([localItem("A 晚回書籍", "work-a")]));
+  requests[0].resolve(response([localItem("A 晚回書籍", "work-a")], 9, "success", 1));
   await first;
-  assert.deepEqual(snapshot(elements), current, "late category response changed the current shelf view");
+  assert.deepEqual(snapshot(elements, badges), current, "late category response changed badge or cards");
   console.log("ASSERTED category-switch-race");
 }
 
 
-async function localCloudSwitchRace() {
-  const { context, elements, requests } = createHarness();
-  const local = context.loadShelfWorks("cat_same", "同一分類", "📚", "同一分類", false);
-  const cloud = context.loadShelfWorks("cat_same", "同一分類", "📚", "同一分類", true);
-  assert.equal(requests.length, 2);
-  assert.equal(requests[0].options.signal.aborted, true, "cloud toggle must abort the local fetch");
+async function failedCloudBadgeSemantics() {
+  const { context, elements, badges, requests } = createHarness();
+  const load = context.loadShelfWorks("cat_failed", "失敗分類", "📚", "失敗分類");
+  requests[0].resolve(response([localItem("僅本地書籍", "work-local")], 1, "failed", 4));
+  await load;
 
-  requests[1].resolve(response([remoteItem("雲端新書", "f".repeat(32))]));
-  await cloud;
-  const current = snapshot(elements);
-  assert.match(current.title, /雲端推薦/);
-  assert.equal(current.buttonText, "📚");
-  assert.match(current.grid, /雲端新書/);
-
-  requests[0].resolve(response([localItem("本地晚回書籍", "work-local")]));
-  await local;
-  assert.deepEqual(snapshot(elements), current, "late local response changed the cloud shelf view");
-  console.log("ASSERTED local-cloud-switch-race");
+  assert.match(elements.get("shelfGrid").innerHTML, /僅本地書籍/);
+  assert.equal(badges.get("cat_failed").textContent, 4);
+  assert.equal(badges.get("cat_failed").title, "本地 4 本；線上數量未知");
+  console.log("ASSERTED failed-cloud-badge-semantics");
 }
 
 
-Promise.all([categorySwitchRace(), localCloudSwitchRace()]).catch(error => {
+Promise.all([categorySwitchRace(), failedCloudBadgeSemantics()]).catch(error => {
   console.error(error);
   process.exitCode = 1;
 });
@@ -143,4 +157,4 @@ Promise.all([categorySwitchRace(), localCloudSwitchRace()]).catch(error => {
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ASSERTED category-switch-race" in result.stdout
-    assert "ASSERTED local-cloud-switch-race" in result.stdout
+    assert "ASSERTED failed-cloud-badge-semantics" in result.stdout
