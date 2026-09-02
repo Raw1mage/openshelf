@@ -189,6 +189,8 @@ class CatalogDAO:
             ("lccn", "TEXT"),
             ("gutenberg_id", "TEXT"),
             ("ol_enriched_at", "TEXT"),
+            # Phase 4：逐本授權。additive-only，不動 Phase 1 的複合唯一索引。
+            ("license_name", "TEXT"),
         ],
     }
 

@@ -11,6 +11,7 @@ from app.crawler.gutenberg_provider import (
 )
 from app.crawler.libgen_live import LibgenCrawler
 from app.crawler.openlibrary_bridge import OpenLibraryBridge
+from app.crawler.openstax_provider import OpenStaxFetchError, OpenStaxProvider
 from app.db.remote_catalog import RemoteCatalogDAO
 
 
@@ -25,6 +26,7 @@ class RemoteCatalogRefresher:
         page_size: int = 25,
         max_pages: int = 10,
         gutenberg: Optional[GutenbergProvider] = None,
+        openstax: Optional[OpenStaxProvider] = None,
         ol_bridge: Optional[OpenLibraryBridge] = None,
         ol_max_items: int = 25,
     ):
@@ -42,6 +44,12 @@ class RemoteCatalogRefresher:
         # 來源預先抽象」。Gutenberg 是第二個來源，兩個具名欄位就夠；真的接到
         # 第四、第五個時再抽象，那時才知道該抽象成什麼形狀。
         self.gutenberg = gutenberg
+        # Phase 4：第三個來源，沿用 Phase 2 的具名參數模式。到這裡已經三個
+        # provider，仍不抽泛用 registry——design.md Non-Goals 明寫不為未驗證的
+        # 未來來源預先抽象，而且三條路徑的**抓取協定彼此不同**（libgen 分頁
+        # 搜尋 / Gutenberg 全量 CSV / OpenStax 分頁 JSON API），硬抽成同一個
+        # 介面只會逗出一層假抽象。
+        self.openstax = openstax
 
     async def _enrich_after_write(self, category_id: str) -> Optional[Dict[str, int]]:
         """刷新寫入完成後的一次性 OL enrich。回傳各 outcome 計數，未設定則 None。
@@ -140,6 +148,61 @@ class RemoteCatalogRefresher:
         # 兩處各自判斷會製造第二個真相來源。
         return result.outcome
 
+    async def refresh_openstax(self, category_id: str, query_term: str) -> str:
+        """OpenStax provider 的刷新路徑（tasks.md 4.1）。
+
+        與 libgen / Gutenberg 兩條路徑**並存**，逐字不改它們。三條的抓取協定
+        本來就不同（分頁搜尋 / 全量 CSV / 分頁 JSON API），共用一個介面只會
+        逼出假抽象。
+
+        回傳 errors.md `openstax_provider.refresh` 的 outcome 值：
+
+        - `not-run`  —— 未設定 provider（不開 refresh row，「沒跑」不得長得像
+                        「跑了沒東西」）。
+        - `failed`   —— `OpenStaxFetchError`，舊 rows 保留不刪；refresh row 是
+                        `status='failed'` 且 error 逐字含 `OPENSTAX_FETCH_FAILED`。
+        - `empty`    —— API 回 200 但 0 本；refresh row 是 `status='fresh'` 且
+                        `error_message IS NULL`。
+        - `ok`       —— 取得且寫入 >= 1 本。
+
+        判準①：`empty` 與 `failed` 走不同分支、不同 refresh status、不同
+        error_message，與 Gutenberg 路徑同構。
+        """
+        if self.openstax is None:
+            return "not-run"
+
+        refresh_id = await asyncio.to_thread(
+            self.dao.begin_refresh, category_id, query_term
+        )
+        try:
+            result = await self.openstax.fetch_books()
+        except OpenStaxFetchError as exc:
+            await asyncio.to_thread(
+                self.dao.finish_refresh,
+                refresh_id,
+                success=False,
+                pages_fetched=0,
+                items_seen=0,
+                items_added=0,
+                items_updated=0,
+                error_message=str(exc),
+            )
+            return "failed"
+
+        added, updated = await asyncio.to_thread(
+            self.dao.upsert_batch, category_id, query_term, result.items
+        )
+        await asyncio.to_thread(
+            self.dao.finish_refresh,
+            refresh_id,
+            success=True,
+            pages_fetched=result.pages_fetched,
+            items_seen=len(result.items),
+            items_added=added,
+            items_updated=updated,
+        )
+        await self._enrich_after_write(category_id)
+        return result.outcome
 
     async def refresh(self, category_id: str, query_term: str) -> None:
         refresh_id = await asyncio.to_thread(

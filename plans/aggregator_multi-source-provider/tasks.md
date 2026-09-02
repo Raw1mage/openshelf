@@ -91,8 +91,67 @@
 
 ## 4. OpenStax（DD-3 延伸，待 Gutenberg 驗證通過才開工）
 
-- [ ] 4.1 新增 OpenStax provider，逐本讀 `license_name`（不得套用全域授權假設） — artifact: app/crawler/openstax_provider.py
-- [ ] 4.2 全欄位取得（`&fields=` 會 400，需整份 payload 解析） — artifact: app/crawler/openstax_provider.py
+- [x] 4.1 新增 OpenStax provider，逐本讀 `license_name`（不得套用全域授權假設） — artifact: app/crawler/openstax_provider.py（`OpenStaxProvider.fetch_books()` 分頁拉完，`parse_books_payload()` 逐本帶出 `license_name`；`source_native_id` 取 CMS 數字 `id` 而非 slug（實測兩者各自唯一 129/129，但 slug 含非 ASCII 且可重命名）；`work_id` 重用 `make_work_id()`。調度側 `remote_catalog_refresh.py:refresh_openstax()` 以 `openstax=` 具名參數並存，逐字不改 libgen / Gutenberg 兩條路徑）
+- [x] 4.2 全欄位取得（`&fields=` 會 400，需整份 payload 解析） — artifact: app/crawler/openstax_provider.py（**該前提已被 2026-09-02 實測推翻，見下方專節**：`fields=` 不會 400，而且不帶它根本拿不到 `license_name`，故本任務**必須**用 `fields=`。欄位清單收新在 `OPENSTAX_FIELDS` 單一常數，寫錯會在第一次請求 400 fail fast）；逐本授權落地於 `app/db/schema.sql` + `app/db/dao.py` 的 `license_name` 可空欄（additive-only），讀路徑 `app/db/remote_catalog.py:query_browseable()` 做兩層解析
+
+### ⚠ Phase 4 實測推翻了任務前提：`&fields=` 不會 400（2026-09-02）
+
+派工單與本文件原記載「加 `&fields=` 會 400，需整份 payload 解析」。實測四組探針：
+
+| 探針 | 結果 |
+| --- | --- |
+| `?type=books.Book&limit=100`（無 fields） | HTTP 200、`meta.total_count:129`，但 items 只有 `id` / `meta` / `title` 三個 key——**沒有 `license_name`** |
+| `&fields=title,license_name` | **HTTP 200**（非 400），且真的帶回 `license_name` |
+| `&fields=zzz_not_a_field` | **HTTP 400** `{"message": "unknown fields: zzz_not_a_field"}` |
+| `&fields=*` | HTTP 200、77 個欄位、3.6 MB |
+| `&limit=100&offset=100` | HTTP 200、回 29 筆（129 − 100），分頁成立 |
+
+**真相**：400 只發生在 `fields=` 帶了 API 不認得的**欄位名**，不是「帶 fields 就 400」。而且方向是反的——不帶 `fields=` 根本拿不到 `license_name`，本 phase 的核心要求（逐本授權）在不帶 `fields=` 的情況下**做不到**。
+
+`fields=*` 是另一條能拿到 license_name 的路，但要付 3.6 MB / 77 欄去換 5 個欄位，且未來新增欄位會靜默改變 payload 大小，故不採用。已將此結論寫入 `openstax_provider.py` 模組 docstring 與 errors.md 的 `OPENSTAX_UNKNOWN_FIELD`。
+
+### Phase 4 逐本授權的實測分佈（這是本 phase 存在的理由）
+
+129 本 → **3 種**值：
+
+| 本數 | `license_name` |
+| --- | --- |
+| 72 | `Creative Commons Attribution-NonCommercial-ShareAlike License` |
+| 46 | `Creative Commons Attribution License` |
+| **11** | **`null`（來源未宣告）** |
+
+那 11 本（`college-physics-courseware`、`cálculo-volumen-1/2/3`、`física-universitaria-volumen-2` 等）是**來源未宣告**，不是抓取缺陷。寫 NULL 才正確——套用任何預設值等於替出版方做了它沒做的聲明。已登記為 errors.md 的 `OPENSTAX_LICENSE_UNDECLARED`（明註「不是錯誤也不需恢復」）。
+
+### Phase 4 授權模型選型（派工單要求明講，不留給人猜）
+
+**選：兩層並存，逐本優先、來源層回退。不擴充 `SOURCE_LICENSE_LABEL` 支援逐本覆寫，也不廢掉它。**
+
+```
+query_browseable() 讀路徑：
+    item["license"] = rci.license_name  or  license_for_source(rci.source)
+                      ↑逐本（Phase 4）      ↑來源層（Phase 2）
+    兩者都無 ⇒ None（空白）
+```
+
+理由：兩種授權在**資料性質上不同**，不該塵縮成同一個機制。Gutenberg 的 `"Public domain in the USA."` 是**來源的性質**（全庫同一句，寫進 DB 反而讓舊 rows 停留在舊字串，Phase 2 已記載此理由）；OpenStax 的是**逐筆資料**（同一來源 3 種值，必須隨 row 存）。把後者塞進前者的 dict 需要一個 `(source, native_id) -> license` 的全域表，那就是把 DB 搬進常數。
+
+### Phase 4 判別力證據（判準①）
+
+**選型：沿用 Gutenberg 的「例外 vs 回傳值」型別分離，不用 OL 的欄位互斥。** 判準不是「哪個寫法好看」而是「失敗要不要阻斷主流程」：OpenStax 是主資料來源，抓取失敗**應該**中止該次刷新（同 Gutenberg）；OL 只是補充欄位，失敗**不應該**中止（故那邊用欄位互斥）。
+
+| 判別對 | 正向控制 | 反向控制 |
+| --- | --- | --- |
+| 解析器壞掉 vs 真的 0 本 | `test_parse_books_payload_keeps_per_book_license_including_null`（3 筆） | `test_parse_books_payload_on_empty_items_is_empty_not_an_error`（0 筆不丟例外） |
+| `failed` vs `empty` | `test_openstax_zero_books_is_empty_outcome_not_failure` | `test_openstax_connection_failure_raises_not_empty`、`test_openstax_unknown_field_400_is_failed_not_parsed_as_empty` |
+| refresh row 層可分辨 | `test_refresher_openstax_failed_and_empty_are_distinguishable`（同一測試內建兩情境，status/error 皆不同） | 同左 |
+| `not-run` vs `empty` | `test_refresher_without_openstax_provider_is_not_run`（not-run 連 refresh row 都沒有） | 同左 |
+| **逐本授權 vs 全域假設** | 兩本有宣告的拿到**不同**字串 | 未宣告那本必須是 `None`，不得被預設值頂上 |
+| 並存不回歸 | Gutenberg 來源層字面值在同一分類內仍正確 | `test_openstax_per_book_license_is_visible_in_api_model` 四種情境同時斷言 |
+| 節流真的存在 | peak > 0（請求有進 transport） | peak ≤ 2（拿掉 limiter 會衝到 5） |
+
+**mutation 指紋（4.2 逐本授權）**：把 `parse_books_payload()` 的 `"license_name": license_name` 改成寫死單一全域值（`"Creative Commons Attribution License"`，即 design.md 明禁的全域授權假設）→ **`2 failed, 64 passed`**，失敗的是 `test_parse_books_payload_keeps_per_book_license_including_null` 與 `test_openstax_per_book_license_is_visible_in_api_model`；還原後 `66 passed`，還原檔 sha256 `534956cfbf16b4d9b17186b510429860d5492ef01baad25579dc84829ed60c2b`（mutation 前後一致）。
+
+**errors.md `openstax_provider.refresh` 五態對應**：`ok` → `test_openstax_fetch_ok_and_request_shape_uses_fields_param` / `test_three_sources_coexist_in_one_category`；`failed` → `test_openstax_connection_failure_raises_not_empty` + `test_openstax_unknown_field_400_...` + refresh row 側 `test_refresher_openstax_failed_and_empty_are_distinguishable`；`empty` → `test_openstax_zero_books_is_empty_outcome_not_failure` + 同一條 refresh row 測試；`not-run` → `test_refresher_without_openstax_provider_is_not_run`；`indeterminate` → errors.md 宣告為 `n/a`（逐本授權未宣告不是不確定，寫 NULL 即正確），由 `test_parse_books_payload_keeps_per_book_license_including_null` 的 `licenses["311"] is None` 鎖定。
 
 ## 5. 文件債清理
 

@@ -149,8 +149,8 @@ class RemoteCatalogDAO:
                     INSERT INTO remote_catalog_item
                         (catalog_id, source, source_native_id, md5, title, authors_display,
                          publication_year, language, format, extension, size_bytes,
-                         first_seen_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         license_name, first_seen_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source, source_native_id) DO UPDATE SET
                         title = CASE
                             WHEN excluded.title = '未知書名' THEN remote_catalog_item.title
@@ -163,12 +163,13 @@ class RemoteCatalogDAO:
                         format = COALESCE(excluded.format, remote_catalog_item.format),
                         extension = COALESCE(excluded.extension, remote_catalog_item.extension),
                         size_bytes = COALESCE(excluded.size_bytes, remote_catalog_item.size_bytes),
+                        license_name = COALESCE(excluded.license_name, remote_catalog_item.license_name),
                         last_seen_at = excluded.last_seen_at
                     """,
                     (catalog_id, source, source_native_id, md5, item.get("title") or "未知書名",
                      item.get("authors_display"), item.get("publication_year"),
                      item.get("language"), item.get("format"), item.get("extension"),
-                     item.get("size_bytes"), now, now),
+                     item.get("size_bytes"), item.get("license_name"), now, now),
                 )
                 added += 0 if existing else 1
                 updated += 1 if existing else 0
@@ -311,7 +312,7 @@ class RemoteCatalogDAO:
                         WHERE m.work_id = w.work_id LIMIT 1) size_bytes,
                        lower(i.value) md5, NULL extension, 'http' download_protocol,
                        NULL torrent_url, NULL magnet_uri, NULL peers_count,
-                       '[]' mirror_links_json, 'local' source
+                       '[]' mirror_links_json, 'local' source, NULL license_name
                 FROM work w
                 JOIN work_category wc ON wc.work_id = w.work_id
                 JOIN scope s ON s.category_id = wc.category_id
@@ -332,7 +333,7 @@ class RemoteCatalogDAO:
                        rci.format, rci.size_bytes, lower(rci.md5), rci.extension,
                        COALESCE(rcs.download_protocol, 'http'), rcs.torrent_url,
                        rcs.magnet_uri, rcs.peers_count,
-                       COALESCE(rcs.mirror_links_json, '[]'), rci.source
+                       COALESCE(rcs.mirror_links_json, '[]'), rci.source, rci.license_name
                 FROM remote_catalog_item rci
                 JOIN remote_catalog_category rcc ON rcc.catalog_id = rci.catalog_id
                 JOIN scope s ON s.category_id = rcc.category_id
@@ -355,10 +356,14 @@ class RemoteCatalogDAO:
             item = dict(row)
             item["availability_tier"] = item.pop("priority")
             item["mirror_links"] = json.loads(item.pop("mirror_links_json") or "[]")
-            # 授權標示由 source 推導（tasks.md 2.2），不落地到 schema——它是來源
-            # 的性質而非逐筆資料，寫進 DB 反而會讓同一來源的舊 rows 停留在
-            # 舊授權字串上。未登錄來源回 None（空白），不得套用預設公版。
-            item["license"] = license_for_source(item.get("source"))
+            # 授權解析（Phase 2 來源層 + Phase 4 逐本層）。兩層**並存**：
+            #   逐本 `license_name` 儭先（OpenStax 129 本實測 3 種值），
+            #   為空時才回退到來源層字面值（Gutenberg 全庫同一句）。
+            # 兩者都沒有 ⇒ None（空白）。**不得套用任何預設授權**：
+            # 未宣告與已確認是不同的事，共用輸出就等於替出版方做聲明。
+            item["license"] = item.pop("license_name", None) or license_for_source(
+                item.get("source")
+            )
             item.pop("identity", None)
             item.pop("rn", None)
             items.append(item)

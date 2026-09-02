@@ -213,6 +213,15 @@ CREATE TABLE IF NOT EXISTS remote_catalog_item (
     -- 最後一次「成功完成查詢」的時間（含查到 0 筆的 empty）。失敗不寫這格——
     -- 失敗要能被下一輪重試，寫了就等於把一次失敗當成一次有效查詢。
     ol_enriched_at TEXT,
+    -- 逐本授權（Phase 4, OpenStax）。與 `SOURCE_LICENSE_LABEL` 的「整個來源一個
+    -- 授權」模式**並存而非取代**：Gutenberg 全庫同一句 "Public domain in the
+    -- USA."，OpenStax 129 本實測有 3 種值（CC BY-NC-SA 72 本 / CC BY 46 本 /
+    -- **null 11 本**）。逐本欄位優先，為空時才回退到來源層標示。
+    --
+    -- NULL 在此逐字的意思是「該來源對這一本未宣告授權」——那 11 本是實測事實，
+    -- 不是抓取缺陷。**不得**套用任何預設值頂上：未宣告與已確認是不同的事，
+    -- 共用同一個輸出就等於替出版方做了它沒做的聲明。
+    license_name TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );

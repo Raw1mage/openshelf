@@ -18,6 +18,13 @@ from app.crawler.openlibrary_bridge import (
     build_query,
     extract_bridge_fields,
 )
+from app.crawler.openstax_provider import (
+    OPENSTAX_API_URL,
+    OPENSTAX_FIELDS,
+    OpenStaxFetchError,
+    OpenStaxProvider,
+    parse_books_payload,
+)
 from app.crawler.remote_catalog_refresh import RemoteCatalogRefresher
 from app.db.dao import CatalogDAO
 from app.db.engine import DatabaseEngine
@@ -1275,6 +1282,478 @@ def test_ol_migration_is_additive_and_keeps_phase1_composite_index(tmp_path):
     assert "idx_remote_catalog_item_identity" in indexes
     assert len(rows) == 1
     assert rows[0]["source_native_id"] == "a" * 32
+
+
+# === OpenStax provider（tasks.md 4.1-4.2）===
+
+# 2026-09-02 實測回應形狀裁剪。三筆刻意覆蓋三種授權情境：
+# CC BY-NC-SA / CC BY / **null（未宣告，實測 129 本中有 11 本）**。
+OPENSTAX_PAGE = {
+    "meta": {"total_count": 3},
+    "items": [
+        {
+            "id": 873,
+            "title": "Additive Manufacturing Essentials",
+            "license_name": "Creative Commons Attribution-NonCommercial-ShareAlike License",
+            "meta": {
+                "slug": "additive-manufacturing-essentials",
+                "html_url": "https://openstax.org/details/books/additive-manufacturing-essentials",
+                "locale": "en",
+            },
+        },
+        {
+            "id": 200,
+            "title": "College Physics",
+            "license_name": "Creative Commons Attribution License",
+            "meta": {
+                "slug": "college-physics",
+                "html_url": "https://openstax.org/details/books/college-physics",
+                "locale": "en",
+            },
+        },
+        {
+            "id": 311,
+            "title": "C\u00e1lculo volumen 1",
+            "license_name": None,
+            "meta": {
+                "slug": "c\u00e1lculo-volumen-1",
+                "html_url": "https://openstax.org/details/books/c\u00e1lculo-volumen-1",
+                "locale": "es",
+            },
+        },
+    ],
+}
+OPENSTAX_EMPTY_PAGE = {"meta": {"total_count": 0}, "items": []}
+# 實測：`fields=zzz_not_a_field` → 400 且 body 是合法 JSON。
+OPENSTAX_400_BODY = {"message": "unknown fields: zzz_not_a_field"}
+
+
+def _openstax_transport(payload, status_code: int = 200, *, capture=None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if capture is not None:
+            capture.append(request)
+        if isinstance(payload, str):
+            return httpx.Response(status_code, text=payload)
+        return httpx.Response(status_code, json=payload)
+
+    return httpx.MockTransport(handler)
+
+
+def test_openstax_endpoint_and_fields_match_the_probed_contract():
+    """4.1：端點鎖字面值（2026-09-02 實測）。
+
+    **`fields=` 是必需的不是禁止的**：實測不帶 fields 時 items 只有
+    id/meta/title，拿不到 license_name；帶 `fields=title,license_name` 回 200
+    且真的帶回。400 只發生在**未知欄位名**。此測試鎖住這個實測結論，
+    避免日後有人依舊誤傳把 fields 拿掉而静默失去授權欄位。
+    """
+    assert OPENSTAX_API_URL == "https://openstax.org/apps/cms/api/v2/pages/"
+    assert "license_name" in OPENSTAX_FIELDS.split(",")
+    assert "title" in OPENSTAX_FIELDS.split(",")
+
+
+def test_parse_books_payload_keeps_per_book_license_including_null():
+    """4.2 核心：逐本 `license_name`，**未宣告就是 None**。
+
+    正向控制：有宣告的兩本各自拿到**不同**的字串（非單一全域值）。
+    反向控制：未宣告的那本必須是 None，不得被任何預設值頂上——若兩者
+    共用同一個輸出，就等於替出版方做了它沒做的聲明。
+    """
+    items = parse_books_payload(OPENSTAX_PAGE)
+
+    assert len(items) == 3
+    licenses = {i["source_native_id"]: i["license_name"] for i in items}
+    assert licenses["873"] == (
+        "Creative Commons Attribution-NonCommercial-ShareAlike License"
+    )
+    assert licenses["200"] == "Creative Commons Attribution License"
+    assert licenses["311"] is None
+    # 逐本而非全域：兩個有值的必須不同。
+    assert licenses["873"] != licenses["200"]
+    assert {i["source"] for i in items} == {"openstax"}
+    assert all(i["md5"] is None for i in items)
+    assert items[0]["work_id"] == make_work_id("openstax", "873")
+
+
+def test_parse_books_payload_on_empty_items_is_empty_not_an_error():
+    """與上一條配對：同一支解析器對 0 筆回空 list 且不丟例外。
+
+    上一條證明它有東西時回 3 筆 ⇒ 這裡的 0 是真的 0，不是解析器壞了。
+    """
+    assert parse_books_payload(OPENSTAX_EMPTY_PAGE) == []
+
+
+@pytest.mark.asyncio
+async def test_openstax_fetch_ok_and_request_shape_uses_fields_param(catalog):
+    """4.1：實際發出的請求必須帶 type/limit/offset/fields 四個參數。"""
+    requests = []
+    provider = OpenStaxProvider(
+        transport=_openstax_transport(OPENSTAX_PAGE, capture=requests),
+        page_size=100,
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_books()
+
+    assert result.outcome == "ok"
+    assert len(result.items) == 3
+    assert result.total_count == 3
+    assert len(requests) == 1
+    params = requests[0].url.params
+    assert params["type"] == "books.Book"
+    assert params["limit"] == "100"
+    assert params["offset"] == "0"
+    assert params["fields"] == OPENSTAX_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_openstax_zero_books_is_empty_outcome_not_failure():
+    """errors.md `empty`：API 回 200 但 0 本 ⇒ empty，且**不**丟例外。"""
+    provider = OpenStaxProvider(
+        transport=_openstax_transport(OPENSTAX_EMPTY_PAGE),
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_books()
+
+    assert result.outcome == "empty"
+    assert result.items == []
+
+
+@pytest.mark.asyncio
+async def test_openstax_connection_failure_raises_not_empty():
+    """errors.md `failed`：連線失敗必須 raise，不得回空結果。
+
+    與上一條 empty 成對——兩者若共用輸出，必有一條紅。
+    """
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unavailable", request=request)
+
+    provider = OpenStaxProvider(
+        transport=httpx.MockTransport(boom),
+        max_attempts=2,
+        backoff_base_seconds=0.0,
+    )
+    with pytest.raises(OpenStaxFetchError) as excinfo:
+        await provider.fetch_books()
+    assert "OPENSTAX_FETCH_FAILED" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_openstax_unknown_field_400_is_failed_not_parsed_as_empty():
+    """errors.md `OPENSTAX_UNKNOWN_FIELD`：400 的 body 是**合法 JSON**
+
+    （實測 `{"message": "unknown fields: zzz_not_a_field"}`）。若不 gate HTTP
+    status，`payload.get("items")` 會安靜拿到空並回報 empty——那正是把
+    failed 降級成 empty。此測試鎖住那條 gate。
+    """
+    provider = OpenStaxProvider(
+        transport=_openstax_transport(OPENSTAX_400_BODY, status_code=400),
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    with pytest.raises(OpenStaxFetchError):
+        await provider.fetch_books()
+
+
+@pytest.mark.asyncio
+async def test_openstax_paginates_until_short_page():
+    """4.1：分頁。實測 129 本、limit=100 → 第二頁 29 筆後停。
+
+    本測試以 page_size=2 縮小同形狀：第一頁滿 2 筆 → 繼續，第二頁 1 筆
+    （不滿）→ 停。正向控制：兩頁都真的被拿了（offset 序列）。
+    """
+    requests = []
+    page1 = {
+        "meta": {"total_count": 3},
+        "items": OPENSTAX_PAGE["items"][:2],
+    }
+    page2 = {
+        "meta": {"total_count": 3},
+        "items": OPENSTAX_PAGE["items"][2:],
+    }
+
+    def paged(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        offset = int(request.url.params["offset"])
+        return httpx.Response(200, json=page1 if offset == 0 else page2)
+
+    provider = OpenStaxProvider(
+        transport=httpx.MockTransport(paged),
+        page_size=2,
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_books()
+
+    assert [r.url.params["offset"] for r in requests] == ["0", "2"]
+    assert result.pages_fetched == 2
+    assert len(result.items) == 3
+    assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_openstax_retries_with_exponential_backoff():
+    """4.1：指數退避（3 次嘗試間的 sleep 秒數）。"""
+    attempts = {"n": 0}
+    slept = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ConnectError("boom", request=request)
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    provider = OpenStaxProvider(
+        transport=httpx.MockTransport(flaky),
+        max_attempts=3,
+        backoff_base_seconds=0.5,
+        sleep=fake_sleep,
+    )
+    with pytest.raises(OpenStaxFetchError):
+        await provider.fetch_books()
+
+    assert attempts["n"] == 3
+    assert slept == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_openstax_recovers_on_second_attempt():
+    """退避的正向控制組：第一次失敗、第二次成功 ⇒ ok。"""
+    calls = {"n": 0}
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("transient", request=request)
+        return httpx.Response(200, json=OPENSTAX_PAGE)
+
+    provider = OpenStaxProvider(
+        transport=httpx.MockTransport(flaky),
+        max_attempts=3,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_books()
+
+    assert calls["n"] == 2
+    assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_openstax_concurrency_is_bounded_by_capacity_limiter():
+    """4.1 節流：以 mock transport 量測併發上界。
+
+    正向控制：peak > 0（請求真的進到 transport）；反向：peak ≤ 2
+    （拿掉 limiter 會衝到 5）。
+    """
+    import anyio
+
+    state = {"inflight": 0, "peak": 0}
+    gate = asyncio.Event()
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
+        await gate.wait()
+        state["inflight"] -= 1
+        return httpx.Response(200, json=OPENSTAX_PAGE)
+
+    limiter = anyio.CapacityLimiter(2)
+    providers = [
+        OpenStaxProvider(
+            transport=httpx.MockTransport(slow),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+            limiter=limiter,
+        )
+        for _ in range(5)
+    ]
+    tasks = [asyncio.create_task(p.fetch_books()) for p in providers]
+    await asyncio.sleep(0.05)
+    peak_while_blocked = state["peak"]
+    gate.set()
+    results = await asyncio.gather(*tasks)
+
+    assert peak_while_blocked > 0, "控制組：必須真的有請求進到 transport"
+    assert peak_while_blocked <= 2
+    assert all(r.outcome == "ok" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_openstax_per_book_license_is_visible_in_api_model(catalog):
+    """4.2：逐本授權必須在 API 回應可見，且三種情境各自正確。
+
+    同一個分類內混著四種授權情境：
+    - OpenStax CC BY-NC-SA（逐本值）
+    - OpenStax CC BY（逐本值，與上一個不同）
+    - OpenStax 未宣告（None——**不得**被任何預設值頂上）
+    - Gutenberg（來源層字面值，Phase 2 行為不得回歸）
+    四者共存才能證明「逐本優先 + 來源層回退」兩層都活著。
+    """
+    remote, _ = catalog
+    remote.upsert_batch("cat_471", "textbooks", parse_books_payload(OPENSTAX_PAGE))
+    remote.upsert_batch("cat_471", "textbooks", parse_catalog_csv(CSV_TWO_ROWS))
+
+    _, stored = remote.query_browseable("cat_471", page=1, page_size=20)
+    api_items = [SearchResultItem(**row) for row in stored]
+    by_title = {item.title: item for item in api_items}
+
+    assert by_title["Additive Manufacturing Essentials"].license == (
+        "Creative Commons Attribution-NonCommercial-ShareAlike License"
+    )
+    assert by_title["College Physics"].license == (
+        "Creative Commons Attribution License"
+    )
+    # 未宣告 ⇒ None。這一格是本 phase 的核心反向控制。
+    assert by_title["C\u00e1lculo volumen 1"].license is None
+    # Gutenberg 的來源層字面值不得因為新增逐本層而壞掉。
+    assert by_title["Moby Dick"].license == "Public domain in the USA."
+
+
+@pytest.mark.asyncio
+async def test_refresher_openstax_failed_and_empty_are_distinguishable(catalog):
+    """4.1：`failed` 與 `empty` 在 refresh row 上必須可分辨（判準①）。"""
+    remote, _ = catalog
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unavailable", request=request)
+
+    failing = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        openstax=OpenStaxProvider(
+            transport=httpx.MockTransport(boom),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    assert await failing.refresh_openstax("cat_471", "textbooks") == "failed"
+    failed_status = remote.get_status("cat_471")
+
+    empty = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        openstax=OpenStaxProvider(
+            transport=_openstax_transport(OPENSTAX_EMPTY_PAGE),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    assert await empty.refresh_openstax("cat_471", "textbooks") == "empty"
+    empty_status = remote.get_status("cat_471")
+
+    assert failed_status["status"] == "failed"
+    assert "OPENSTAX_FETCH_FAILED" in failed_status["error"]
+    assert empty_status["status"] == "fresh"
+    assert empty_status["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_refresher_without_openstax_provider_is_not_run(catalog):
+    """errors.md `not-run`：未設定 provider ⇒ 跳過，不留 refresh row。"""
+    remote, _ = catalog
+    refresher = RemoteCatalogRefresher(
+        remote, LibgenCrawler(mirrors=["https://example.test"])
+    )
+
+    assert await refresher.refresh_openstax("cat_471", "textbooks") == "not-run"
+    assert remote.get_status("cat_471")["status"] == "never_refreshed"
+
+
+@pytest.mark.asyncio
+async def test_three_sources_coexist_in_one_category(catalog):
+    """4.1 端到端：三個來源同時出現在同一分類，去重總數正確。
+
+    libgen 1 + gutenberg 2 + openstax 3 = 6。兩個非 libgen 來源的 md5 全為
+    NULL，若複合鍵不成立它們會互撞——這是 Phase 1 抽象在第三個來源上的
+    驗證點。
+    """
+    remote, _ = catalog
+    refresher = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        gutenberg=GutenbergProvider(
+            transport=_csv_transport(CSV_TWO_ROWS),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+        openstax=OpenStaxProvider(
+            transport=_openstax_transport(OPENSTAX_PAGE),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    remote.upsert_batch("cat_471", "mixed", [remote_item("b" * 32, "libgen 那本")])
+
+    assert await refresher.refresh_gutenberg("cat_471", "mixed") == "ok"
+    assert await refresher.refresh_openstax("cat_471", "mixed") == "ok"
+
+    total, items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 6
+    assert {item["source"] for item in items} == {"libgen", "gutenberg", "openstax"}
+
+
+@pytest.mark.asyncio
+async def test_openstax_refresh_is_idempotent_on_repeat(catalog):
+    """4.1：同一份 payload 刷兩次，總數仍為 3（複合鍵去重成立）。"""
+    remote, _ = catalog
+    refresher = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        openstax=OpenStaxProvider(
+            transport=_openstax_transport(OPENSTAX_PAGE),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+
+    await refresher.refresh_openstax("cat_471", "textbooks")
+    await refresher.refresh_openstax("cat_471", "textbooks")
+
+    total, _items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 3
+
+
+def test_license_name_migration_is_additive_and_keeps_phase1_index(tmp_path):
+    """4.2：additive-only——新增 license_name 不得動 Phase 1 複合唯一索引。"""
+    import sqlite3
+
+    db_path = tmp_path / "legacy-openstax.sqlite"
+    engine = DatabaseEngine(db_path=db_path)
+    CatalogDAO(engine=engine)
+    remote = RemoteCatalogDAO(engine=engine)
+    remote.upsert_batch("cat_471", "python", [remote_item("a" * 32, "舊資料")])
+
+    dao = CatalogDAO(engine=DatabaseEngine(db_path=db_path))
+    assert dao.apply_column_migrations() == [], "重跑 migration 應為 no-op"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(remote_catalog_item)").fetchall()
+        }
+        indexes = {
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='remote_catalog_item'"
+            ).fetchall()
+        }
+        rows = conn.execute(
+            "SELECT md5, source, source_native_id, license_name "
+            "FROM remote_catalog_item"
+        ).fetchall()
+
+    assert "license_name" in cols
+    assert {"source", "source_native_id", "md5"} <= cols, "Phase 1 欄位不得消失"
+    assert "idx_remote_catalog_item_identity" in indexes
+    assert len(rows) == 1
+    assert rows[0]["source_native_id"] == "a" * 32
+    # libgen 舊資料的 license_name 為 NULL（來源未宣告），不得被回填任何值。
+    assert rows[0]["license_name"] is None
 
 
 @pytest.mark.asyncio
