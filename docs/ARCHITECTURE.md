@@ -102,11 +102,15 @@
     - **書籤與備份還原 (`.html` / `.json`)**：支援將導出的 Netscape HTML 書籤檔或 JSON 資料庫備份一鍵匯入解析並還原至書單。
   - **Chrome 擴充套件模式 (可選增強)**：提供選配的 Chrome Extension 與原生書籤欄進行實體雙向即時同步。
 
-### 3.10 `Bookstalls` & `OnDemandCategoryDiscovery` (`app/db/categories.py`, `app/api/category_routes.py`, `app/static/js/app.js`)
+### 3.10 `Bookstalls` & `PersistentRemoteCatalog` (`app/db/remote_catalog.py`, `app/crawler/remote_catalog_refresh.py`, `app/api/category_routes.py`, `app/static/js/app.js`)
 - 多階層樹狀分類與線上書攤（`🏪`）：
-  - 預設注入標準中文圖書多階層樹狀分類。
-  - 「有觸及再展開（On-Demand Discovery）」機制：分類書架預設只呈現可信本地藏書；使用者明確點選 `🌐` 後，才以該領域關鍵字向 Libgen 公網探測推薦書目。
-  - 分流書架 UI：本地分類藏書（`💾` 直讀與原檔下載）與雲端推薦（`🌐` 一鍵鏡像收書）使用獨立檢視，不混用分類徽章語意。
+  - 預設注入標準中文圖書多階層樹狀分類；本地藏書與遠端可逛書目分開持久化，遠端資料不得污染本地 `work`。
+  - 分類 API 先從 SQLite 遠端 catalog 即時分頁回應，再以單分類去重的背景 task 刷新來源；開啟書攤不等待外部網路。
+  - 刷新採只增不減的 upsert：以穩定書目識別去重，保存首次／最近發現時間與來源；某次搜尋缺席或網路失敗不得刪除已累積書目。
+  - crawler 以來源原始列數判斷下一頁，避免無 MD5 row 被過濾後提早終止；全鏡像失敗必須記為 `failed`，不得與合法空頁共用輸出。
+  - API `total` 是分類完整子樹內本地藏書＋遠端 catalog 的穩定 ID 去重聯集；書卡使用 `page`／`page_size` 分頁，單頁長度不得冒充聯集總數。
+  - `catalog_status.accumulated_total` 專指遠端 catalog 的 `COUNT(DISTINCT catalog_id)`，在 `never_refreshed|failed|fresh` 皆回持久化全集；失敗狀態保留錯誤訊號並允許後續立即重試。
+  - request generation + `AbortController` 防止較早分類或分頁請求晚回後覆蓋目前書卡、徽章與 tooltip。
   - **全純圖示化書卡動作區 (Pure Icon UI)**：所有標籤與按鈕全面去除文字，線上閱讀採用眼睛符號「`👁️`」正方形按鈕，收書採用「`📥`」，格式改為精緻圖示（`📕` 原生 PDF、`📷` 掃描 PDF、`📗` EPUB），搭配原生 Mouseover Tooltip 呈現說明文字；次要功能（`⭐`、`💾`、`ℹ️`）收納於「`⋯`」下拉選單中。
 
 ### 3.11 `SmartBookClassification` (`app/classification/`, `app/db/dao.py`, `script/backfill_classification.py`)

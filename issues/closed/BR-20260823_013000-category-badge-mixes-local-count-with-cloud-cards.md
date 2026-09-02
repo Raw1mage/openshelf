@@ -1,6 +1,7 @@
-# BR-20260823_013000 — 分類徽章只計本地藏書，書架卻混入雲端推薦
+# BR-20260823_013000 — 線上書攤分類數量必須涵蓋所有可逛書目
 
 - **Status**: CLOSED
+- **Reopened**: 2026-08-23 — 前次修復反向移除線上可逛書目，違反產品語意
 - **Closed**: 2026-08-23 by `ses_fe7b5cbadffeSlxj0dv1Z740O4`
 - **Severity**: Medium
 - **Scope**: `classification-display-consistency`
@@ -20,23 +21,24 @@
 - `include_cloud=false`：`category.works_count=2`、`total=2`、`items=2`
 - 不存在分類：HTTP 404
 
-因此不是 DAO 計數、父子 scope、分類回填或前端快取錯誤，而是本地分類集合與雲端推薦集合被預設混成同一個書架。
+前次 RCA 正確找出兩個集合不一致，卻錯誤裁決成「砍掉線上集合」。線上書攤的產品語意本來就是瀏覽本地藏書與線上可收書目；真正缺陷是 sidebar 徽章仍顯示本地數量，沒有在雲端書目載入後同步成實際可逛總數。
 
-## 修復契約
+## 最終修復契約
 
-1. 預設分類書架只顯示本地分類藏書，使徽章、總數與書卡一致。
-2. 雲端探索改為使用者明確觸發，且與本地藏書分區呈現。
-3. API 的 `include_cloud` 預設為 `false`；顯式 `true` 仍保留既有雲端探索能力。
-4. 補測試證明預設路徑不呼叫 crawler；顯式雲端路徑才加入 remote items。
-5. 防止快速切換分類時舊請求覆蓋新分類畫面。
+1. 線上書攤先從 SQLite 讀取本地藏書與已累積遠端 catalog 的去重聯集，不等待外部網路。
+2. 過期、失敗或從未刷新時，僅排入單分類背景刷新；刷新只 upsert，某次缺席不得刪除舊書目。
+3. API `total` 是分類子樹內本地＋遠端的穩定 ID 去重聯集；書卡按 `page/page_size` 分頁，單頁長度不得冒充總數。
+4. `catalog_status.accumulated_total` 專指持久化遠端 catalog distinct 全集；`never_refreshed|failed|fresh` 均須回真實持久化數量。
+5. 全鏡像網路／解析失敗必須記 `failed` 並保留舊 rows；合法空結果與失敗不得共用輸出。
+6. 來源游標依原始 provider rows 判斷，不能因無 MD5 row 被過濾後提前停止後續頁。
+7. 保留 AbortController + generation 競態修補；舊分類或舊分頁回應不得覆蓋目前書卡、徽章或 tooltip。
 
-## 驗證
+## 最終驗證
 
-- 聚焦測試：`tests/test_categories.py` + `tests/test_bookstall_race.py`，4 passed。
-- 缺席控制組：不存在測試路徑 rc=4，證明 pytest 指令具鑑別力。
-- 完整測試：424 passed、27 skipped。
-- 線上 `cat_880`：`category.works_count=2`、`total=2`、`items=2`；不存在分類控制組 HTTP 404。
-- 快速切換競態：分類 A→B 與同分類本地→雲端兩組延遲回應測試均進入斷言。
-- JavaScript 語法與 diff：`node --check`、`git diff --check` 均 rc=0。
-- 真瀏覽器互動：UNVERIFIED；Chromium 可啟動，但本機缺少可用 CDP WebSocket client。未將此缺口包裝成通過。
-- Architecture Sync: 已更新 `docs/ARCHITECTURE.md` 3.10，明定本地分類藏書與按需雲端推薦為獨立檢視。
+- VANS Round 2：CLEARED；三項 finding（失敗誤報 fresh、過濾後短頁提前終止、狀態總數非持久化全集）均關閉。
+- 聚焦測試：15 passed；完整測試：435 passed、27 skipped；缺席測試控制組 rc=4；`git diff --check` rc=0。
+- 線上 `cat_880` 首次請求：`total=2`、`status=never_refreshed`、`refresh_scheduled=true`，證明不等待外網。
+- 12 秒後：本地＋遠端聯集 `total=27`、本頁 `items=20`、遠端 `accumulated_total=25`、`status=fresh`。
+- SQLite：`remote_catalog_item=25`、`cat_880` 遠端 distinct=25、`PRAGMA integrity_check=ok`；不存在分類控制組 HTTP 404。
+- 真瀏覽器 pixels 與跨 daemon restart：UNVERIFIED；未冒充已驗。持久性由現役 SQLite rows 與 reopen 測試覆蓋。
+- Architecture Sync: `docs/ARCHITECTURE.md` 3.10 已更新為 `PersistentRemoteCatalog`。
