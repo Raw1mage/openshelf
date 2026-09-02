@@ -155,8 +155,44 @@ query_browseable() 讀路徑：
 
 ## 5. 文件債清理
 
-- [ ] 5.1 改寫 `SOURCE-SURVEY.md` 書籍側，反映 2026-09-02 實查數字並標註 8 項已推翻結論 — artifact: SOURCE-SURVEY.md
-- [ ] 5.2 `docs/ARCHITECTURE.md` 3.10 新增多來源 identity 段落 — artifact: docs/ARCHITECTURE.md
+- [x] 5.1 改寫 `SOURCE-SURVEY.md` 書籍側，反映 2026-09-02 實查數字並標註 8 項已推翻結論 — artifact: SOURCE-SURVEY.md（檔首新增修訂標記並**明寫論文側未重驗不背書**；§書籍側整節重寫為 7 列含採用狀態旗標（✅/—/❌）；新增〈已被 Phase 1-4 實測推翻的舊結論〉**8 列對照表**，每列帶依據欄；§Q-C 填補方向改為四列現況表；§未查到清單第 3/8 項划掉並標實查數字。**推翻清單是重建的不是拄來的**，見下方 Phase 5 摩擦欄）
+- [x] 5.2 `docs/ARCHITECTURE.md` 3.10 新增多來源 identity 段落 — artifact: docs/ARCHITECTURE.md:116（新增 §3.10.1 `多來源 Identity 與授權模型`，插在 3.10 末尾與 3.11 之間，不動原 3.10 任何字；內容含複合鍵 `(source, source_native_id)` 與 md5 降級理由、additive-only migration 約束、三 provider 並存對照表、OL 橋接層請求路徑雔離與「欄位互斥 vs 例外分離」取捨理由、兩層授權模型及未宣告必須寫 NULL）
+
+### ⚠ Phase 5 摩擦（判準②）：「8 項推翻結論」從來沒有明細
+
+`design.md:17`、`design.md:50`、`proposal.md:7`、`proposal.md:80` 四處都寫「8 項已推翻結論」，
+**但 plan 包內任何一份文件都沒有列出那 8 項是哪 8 項**。這不是我搜尋不到，是資訊從一開始
+就不在系統裡（原始調研結論 24,452 bytes 在 subagent `ses_f9fca06c2ffea7itSoYG65wtG2` 的 session 內，
+未落成檔案）。
+
+**處置**：依 Phase 1-4 實際留下的可驗證依據（commit sha / 實測表 / DD 條目）**逐項重建**出
+8 項，寫進 SOURCE-SURVEY.md，並在表前**明寫「它是否與原作者心中那 8 項逐字相同，無法從
+現存文件判定——此為待確認項」**。沒有用推測填空，也沒有靠沉默把它讀成「已完成」。
+
+另一個相關摩擦：`design.md` DD-3 寫「catalog CSV 79,288 筆」，那是調研 subagent 的二手數字，
+而我 Phase 2 只實測過 URL / 表頭 / `content-length`，**從未數過行**。本次實下並以 `csv.DictReader`
+逐列計數：**總列數 79,288 確實吻合，但 `Type=="Text"` 只有 78,037 本**（餘 1,251 列是 Sound 1,114 /
+Dataset 89 / Image 33 / MovingImage 8 / Collection 4 / StillImage 3）。`gutenberg_provider.py` 只收
+`Type == "Text"`，所以「79,288」拿來當書籍本數會**高估 1,251 本**。SOURCE-SURVEY.md 已兩個數字並列。
+
+### Phase 5 改動對應依據（每項都對得回一個實測或 sha）
+
+| 改動 | 依據 |
+| --- | --- |
+| Gutenberg 79,288 列 / 78,037 本 Text | 2026-09-02 實下 CSV + `csv.DictReader` 逐列計數；`http_code=200`、`size=21196613`；負向控制：同 host `pg_catalog_DOES_NOT_EXIST.csv` 回 **404**（故 200 不是「什麼都回 200」） |
+| Gutenberg catalog CSV 是官方免申請入口 | 同上；另見 tasks.md 2.1 的 Phase 2 實證 |
+| OpenStax 129 本 | 2026-09-02 重驗 `?type=books.Book&limit=1` → HTTP 200、`meta.total_count=129`；commit `4d471c8b` |
+| OpenStax 逐本授權 72/46/11 | tasks.md §Phase 4 逐本授權實測分佈；commit `4d471c8b` |
+| `&fields=` 不會 400（400 只在未知欄位名） | tasks.md §⚠ Phase 4 四組探針表 |
+| Standard Ebooks OPDS 401 | 2026-09-02 curl `/feeds/opds/all` → **401**；**正向控制組**：同站首頁 → **200**（故 401 是授權牆，不是站台不通或我網路壞了） |
+| Standard Ebooks 本數**仍未查到** | 實話實說，未以推測填空 |
+| OL `search.json` 6 方對映可用 | 2026-09-02 重驗完整 fields 查詢 → HTTP 200；tasks.md §Phase 3 OL API 實測存證；commit `049c32cf` |
+| 跨來源主鍵不存在 → 複合鍵 | `design.md` DD-1；commit `65e945d8` |
+| IA `licenseurl` 不可信 | `design.md` DD-6（承襲調研實測，本次未重驗，文件中未改其語氣） |
+| NAP 剔除 | `design.md` DD-7 |
+| Wikidata P2034 不可信 | `design.md` DD-5 |
+| HathiTrust / DOAB / OL dump 大小 | **未重驗**，文中已逐列標明「此為 2026-08-19 原數字，本次未重驗」 |
+| 論文側全節 | **未動**，檔首修訂標記已明寫不背書 |
 
 ## 6. 收尾
 

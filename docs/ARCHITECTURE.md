@@ -113,6 +113,40 @@
   - request generation + `AbortController` 防止較早分類或分頁請求晚回後覆蓋目前書卡、徽章與 tooltip。
   - **全純圖示化書卡動作區 (Pure Icon UI)**：所有標籤與按鈕全面去除文字，線上閱讀採用眼睛符號「`👁️`」正方形按鈕，收書採用「`📥`」，格式改為精緻圖示（`📕` 原生 PDF、`📷` 掃描 PDF、`📗` EPUB），搭配原生 Mouseover Tooltip 呈現說明文字；次要功能（`⭐`、`💾`、`ℹ️`）收納於「`⋯`」下拉選單中。
 
+#### 3.10.1 多來源 Identity 與授權模型 (Multi-Source Identity & Licensing)
+
+> 來源：`aggregator_multi-source-provider` Phase 1-4（commit `65e945d8` / `e167f395` / `049c32cf` / `4d471c8b`）。
+
+- **來源層主鍵是複合鍵 `(source, source_native_id)`，不是 `md5`**（DD-1）：
+  - `md5` 降級為**可空、非唯一**的橋接欄位，僅供 libgen 既有資料與 `MirrorResolver` 下載路徑使用（DD-2）。
+  - 理由：**沒有任何免費識別符能單獨當跨來源主鍵**——ISBN/OCLC/LCCN 皆回陣列、非一對一。
+  - **反向控制組是這個設計的存在理由**：SQLite 對多筆 `md5=NULL` **不**觸發 UNIQUE 衝突，若維持 `md5 UNIQUE` 而讓新來源填 NULL，去重會**靜默失效**（缺席態與失敗態共用輸出）。
+- **Migration 一律 additive-only**：`app/db/schema.sql` 內聯欄位供新 DB bootstrap，`app/db/dao.py` 的 `_COLUMN_MIGRATIONS["remote_catalog_item"]` 供舊 DB `ALTER`；新增欄位一律可空，**不得刪欄位、不得改既有欄位語意、不得動複合唯一索引**。複合索引建在 `_POST_MIGRATION_INDEXES`（必須等 `source_native_id` 回填跑完才能建）。
+- **`work_id` 生成收歛為共用函式** `app/crawler/libgen_live.py` 的 `make_work_id(source, source_native_id)`；libgen 輸出字串逐字不變（向下相容）。
+- **三 provider 並存，調度層互不干涉**（`app/crawler/remote_catalog_refresh.py`，具名參數 `gutenberg=` / `openstax=`）：
+
+  | provider | 來源 | `source_native_id` | 失敗語意 |
+  |---|---|---|---|
+  | `libgen` | 公網鏡像即時檢索 | 既有 `md5` | 全鏡像失敗記 `failed`，不與合法空頁共用輸出 |
+  | `gutenberg` | `cache/epub/feeds/pg_catalog.csv` | Gutenberg `Text#` | **例外分離**（`GutenbergFetchError`）——主目錄抓取失敗**應該**中止該次刷新 |
+  | `openstax` | CMS JSON API（`?type=books.Book`） | CMS 數字 `id`（非 slug） | **例外分離**（同 Gutenberg） |
+
+- **Open Library 是橋接層而非 provider**（`app/crawler/openlibrary_bridge.py`，DD-4）：
+  - **寫入時一次性 enrich，絕不掛在任何 API GET 的同步路徑上**——`category_routes.py` 對本模組**零引用**（由原碼掃描測試鎖定）。理由：官方明文禁 bulk harvest 與「hundreds of single-book requests」。
+  - **失敗不得阻斷主寫入**，故這裡採**欄位互斥**（`OLEnrichResult` 的 `error`/`fields_written`/`queried` 三欄組合）而非例外分離——**這是與上表兩個 provider 相反的刻意取捨**，判準是「失敗要不要阻斷主流程」，不是寫法偏好。
+  - `ol_enriched_at` 在 **empty 時仍蓋**（那是一次有效查詢）、**failed 時不蓋**（否則一次失敗會永不重試）。
+- **兩層授權模型（逐本優先、來源層回退）**，讀路徑在 `app/db/remote_catalog.py:query_browseable()`：
+
+  ```
+  item["license"] = rci.license_name  or  license_for_source(rci.source)
+                    ↑逐筆資料（OpenStax）    ↑來源性質（Gutenberg）
+  兩者皆無 ⇒ None（空白）
+  ```
+
+  - **兩種授權在資料性質上不同，不得壓縮成同一個機制**：Gutenberg 的 `"Public domain in the USA."` 是**來源的性質**（全庫同一句，存於 `app/models/catalog.py` 的 `SOURCE_LICENSE_LABEL` 字面值 SSOT）；OpenStax 的是**逐筆資料**（同一來源 3 種值，必須隨 row 存於 `license_name` 可空欄）。
+  - **來源未宣告授權必須寫 NULL，不得套用任何預設值**（OpenStax 129 本中實測 11 本未宣告）——套預設值等於替出版方做了它沒做的聲明。libgen 的 license 同理為 `None`（來源未宣告 ≠ 已確認公版）。
+  - Gutenberg 的授權是「美國公版」**非全球公版**，UI/API 必須可見且不得與一般公版混同。
+
 ### 3.11 `SmartBookClassification` (`app/classification/`, `app/db/dao.py`, `script/backfill_classification.py`)
 - 採規則優先、模型補判的兩階段分類：入庫路徑只跑零網路規則層；零命中或多類衝突標記為 `pending`，由可重跑回填命令呼叫 OpenAI-compatible endpoint。
 - 模型輸出只接受 taxonomy 既有葉節點、最多兩類；非法 JSON、未知／父節點 ID、429/5xx 或逾時均不使用預設類別。
