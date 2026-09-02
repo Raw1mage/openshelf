@@ -1,5 +1,8 @@
 import asyncio
+import logging
 from typing import Dict, Optional
+
+log = logging.getLogger(__name__)
 
 from app.crawler.gutenberg_provider import (
     GUTENBERG_SOURCE,
@@ -7,6 +10,7 @@ from app.crawler.gutenberg_provider import (
     GutenbergProvider,
 )
 from app.crawler.libgen_live import LibgenCrawler
+from app.crawler.openlibrary_bridge import OpenLibraryBridge
 from app.db.remote_catalog import RemoteCatalogDAO
 
 
@@ -21,16 +25,42 @@ class RemoteCatalogRefresher:
         page_size: int = 25,
         max_pages: int = 10,
         gutenberg: Optional[GutenbergProvider] = None,
+        ol_bridge: Optional[OpenLibraryBridge] = None,
+        ol_max_items: int = 25,
     ):
         self.dao = dao
         self.crawler = crawler
         self.page_size = page_size
         self.max_pages = max_pages
+        # OL 橋接（DD-4, Phase 3）。掛在**刷新流程末段**，不是查詢路徑——
+        # `category_routes.py` 完全不引用 OpenLibraryBridge，那是這條約束
+        # 唯一真正的保證（design.md: no synchronous call on request path）。
+        self.ol_bridge = ol_bridge
+        self.ol_max_items = ol_max_items
         # provider 調度（tasks.md 2.3）：不再假設只有 libgen。刻意用具名參數而非
         # 泛用 provider registry——design.md Non-Goals 明寫「不為未驗證的未來
         # 來源預先抽象」。Gutenberg 是第二個來源，兩個具名欄位就夠；真的接到
         # 第四、第五個時再抽象，那時才知道該抽象成什麼形狀。
         self.gutenberg = gutenberg
+
+    async def _enrich_after_write(self, category_id: str) -> Optional[Dict[str, int]]:
+        """刷新寫入完成後的一次性 OL enrich。回傳各 outcome 計數，未設定則 None。
+
+        **一定在 upsert 之後、且不影響刷新結果**：書目此刻已上架，OL 整段掛掉
+        也只是這裡回一組 failed 計數，refresh row 已經是 fresh 了。`enrich_item()`
+        本身不拋例外（見該處注解），故此處不需要 try——但仍保留一層，因為
+        `list_items_needing_ol_enrichment` 的 DB 讀是可能失敗的，而那同樣不該
+        讓一次成功的刷新變成失敗。
+        """
+        if self.ol_bridge is None:
+            return None
+        try:
+            return await self.ol_bridge.enrich_category(
+                category_id, max_items=self.ol_max_items
+            )
+        except Exception as exc:  # noqa: BLE001 - enrich 永不阻斷主流程
+            log.warning("OL enrich pass failed for %s: %s", category_id, exc)
+            return None
 
     def schedule(self, category_id: str, query_term: str) -> bool:
         key = f"{self.dao.engine.db_path}:{category_id}"
@@ -103,6 +133,9 @@ class RemoteCatalogRefresher:
             items_added=added,
             items_updated=updated,
         )
+        # 寫入完成、refresh row 已定案之後才 enrich（DD-4）。順序是契約的一部分：
+        # OL 是寫入時的一次性補充，不是上架的前置條件。
+        await self._enrich_after_write(category_id)
         # provider 已經把 ok/empty 分開了，這裡逐字沿用，不重新判斷一次——
         # 兩處各自判斷會製造第二個真相來源。
         return result.outcome
@@ -146,6 +179,9 @@ class RemoteCatalogRefresher:
                 items_updated=items_updated,
                 cursor=cursor,
             )
+            # DD-4：libgen 路徑同樣在**寫入完成之後**做一次性 OL enrich。
+            # 未注入 ol_bridge 時這是 no-op，故 Phase 2 鎖定的 libgen 行為不變。
+            await self._enrich_after_write(category_id)
         except Exception as exc:
             await asyncio.to_thread(
                 self.dao.finish_refresh,

@@ -215,6 +215,81 @@ class RemoteCatalogDAO:
         return added, updated
 
 
+    # === Open Library 橋接欄位（DD-4, Phase 3）===
+    #
+    # 這兩個方法是 `OpenLibraryBridge` 的**唯一** DB 介面。刻意放在 DAO 而不是
+    # bridge 內直接開 connection：寫入路徑集中在這裡，才能保證 bridge 不會
+    # 意外碰到 identity 欄位（Phase 1 的複合鍵）。
+
+    # bridge 可回填的欄位白名單。硬編而非由呼叫端決定，是為了讓「bridge 能寫
+    # 哪些欄位」成為 DAO 的保證而非約定——OL 回應是外部資料，不得讓它決定
+    # UPDATE 的欄位集合。
+    _OL_BRIDGE_COLUMNS = ("ol_key", "isbn", "oclc", "lccn", "gutenberg_id")
+
+    def mark_ol_enriched(
+        self, catalog_id: str, fields: Dict[str, Any]
+    ) -> int:
+        """寫入 OL 橋接欄位並蓋上 `ol_enriched_at`。回傳實際寫入的欄位數。
+
+        `fields` 為空（OL 查到 0 筆）時**仍然**蓋 `ol_enriched_at`——那是一次
+        有效查詢，不該讓下一輪再打一次 OL。回傳 0 與回傳 N 因此是可分辨的：
+        0 = 查過但沒東西，N = 回填了 N 格。兩者都代表「查過了」。
+
+        只 UPDATE 白名單欄位，且只在該欄目前為 NULL 或有新值時覆蓋——絕不
+        觸碰 source / source_native_id / md5（Phase 1 的 identity 欄位）。
+        """
+        writable = {
+            key: value
+            for key, value in (fields or {}).items()
+            if key in self._OL_BRIDGE_COLUMNS and value
+        }
+        now = self._now()
+        with self.engine.session() as conn:
+            if writable:
+                assignments = ", ".join(f"{col} = ?" for col in writable)
+                conn.execute(
+                    f"UPDATE remote_catalog_item SET {assignments}, ol_enriched_at = ? "
+                    "WHERE catalog_id = ?",
+                    (*writable.values(), now, catalog_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE remote_catalog_item SET ol_enriched_at = ? WHERE catalog_id = ?",
+                    (now, catalog_id),
+                )
+        return len(writable)
+
+    def list_items_needing_ol_enrichment(
+        self, category_id: str, limit: int = 25
+    ) -> List[Dict[str, Any]]:
+        """列出該分類中尚未 enrich 過的 item（`ol_enriched_at IS NULL`）。
+
+        判準：用 `ol_enriched_at` 而**不是**「橋接欄位是不是空的」。後者無法
+        分辨「還沒查」與「查過但 OL 沒有」——那正是缺席態與失敗態共用輸出，
+        會讓 OL 沒收錄的書每一輪都被重打一次（而 OL 明文禁止那種行為）。
+        """
+        with self.engine.session() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE scope(category_id) AS (
+                    SELECT category_id FROM category WHERE category_id = ?
+                    UNION ALL
+                    SELECT c.category_id FROM category c
+                    JOIN scope s ON c.parent_id = s.category_id
+                )
+                SELECT DISTINCT rci.catalog_id, rci.title, rci.authors_display,
+                       rci.isbn, rci.ol_enriched_at
+                FROM remote_catalog_item rci
+                JOIN remote_catalog_category rcc ON rcc.catalog_id = rci.catalog_id
+                JOIN scope s ON s.category_id = rcc.category_id
+                WHERE rci.ol_enriched_at IS NULL
+                ORDER BY rci.last_seen_at DESC
+                LIMIT ?
+                """,
+                (category_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def query_browseable(
         self, category_id: str, page: int, page_size: int
     ) -> Tuple[int, List[Dict[str, Any]]]:

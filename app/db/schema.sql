@@ -197,6 +197,22 @@ CREATE TABLE IF NOT EXISTS remote_catalog_item (
     format TEXT,
     extension TEXT,
     size_bytes INTEGER,
+    -- Open Library 橋接欄位（DD-4, Phase 3）。全部可空：OL 是**寫入時的一次性
+    -- enrich**，不是必要條件——查不到、逾時、OL 掛掉都不得阻斷書目上架，
+    -- 那些情況下這幾格就停在 NULL。
+    --
+    -- `NULL` 在此逐字的意思是「尚未成功回填」，它同時涵蓋「還沒查」與
+    -- 「查過但 OL 沒有」——所以**不可**只看這幾格判斷有沒有查過，
+    -- 那是 `ol_enriched_at` 的職責（見下）。兩者刻意分開：欄位為空與
+    -- 未曾查詢若共用同一個輸出，節流就無從判斷該不該重打 OL。
+    ol_key TEXT,
+    isbn TEXT,
+    oclc TEXT,
+    lccn TEXT,
+    gutenberg_id TEXT,
+    -- 最後一次「成功完成查詢」的時間（含查到 0 筆的 empty）。失敗不寫這格——
+    -- 失敗要能被下一輪重試，寫了就等於把一次失敗當成一次有效查詢。
+    ol_enriched_at TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );

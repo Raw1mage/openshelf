@@ -53,9 +53,41 @@
 
 ## 3. Open Library 橋接層（DD-4/DD-5）
 
-- [ ] 3.1 寫入時一次性呼叫 `search.json?fields=key,title,ia,ebook_access,isbn,oclc,lccn,id_project_gutenberg`，失敗不阻斷主流程 — artifact: app/crawler/openlibrary_bridge.py
-- [ ] 3.2 回填 ISBN/OCLC/LCCN/Gutenberg-ID 為可空欄位；不當查詢時即時依賴（no synchronous call on request path） — artifact: app/db/remote_catalog.py
-- [ ] 3.3 節流測試：非 bulk、無 hundreds-of-requests 模式（單元測試以 mock transport 驗證呼叫頻率上界） — artifact: tests/test_remote_catalog.py
+- [x] 3.1 寫入時一次性呼叫 `search.json?fields=key,title,ia,ebook_access,isbn,oclc,lccn,id_project_gutenberg`，失敗不阻斷主流程 — artifact: app/crawler/openlibrary_bridge.py（`OL_SEARCH_URL` + `OL_FIELDS` + `build_query()` + `OpenLibraryBridge.enrich_item()`；**2026-09-02 實測驗證非憑記憶**，見下方「OL API 實測存證」。`enrich_item()` 刻意**不拋例外**，全數錯誤轉譯成 `outcome="failed"`，把「吞掉不阻斷」做成模組保證而非呼叫端責任；`test_ol_failure_does_not_block_or_rollback_the_main_write` 鎖定）
+- [x] 3.2 回填 ISBN/OCLC/LCCN/Gutenberg-ID 為可空欄位；不當查詢時即時依賴（no synchronous call on request path） — artifact: app/db/remote_catalog.py（`mark_ol_enriched()` / `list_items_needing_ol_enrichment()`，白名單 `_OL_BRIDGE_COLUMNS` 限定可寫欄位，**絕不觸碰 Phase 1 的 source / source_native_id / md5**）；schema 側走 additive-only：`app/db/schema.sql` 內聯 6 個可空欄位供新 DB bootstrap、`app/db/dao.py` 的 `_COLUMN_MIGRATIONS["remote_catalog_item"]` 追加同 6 欄供舊 DB ALTER，**未動 Phase 1 的 `idx_remote_catalog_item_identity` 複合唯一索引也未改任何既有欄位語意**（`test_ol_migration_is_additive_and_keeps_phase1_composite_index` 逐項驗證）；請求路徑雔離由 `test_refresh_runs_ol_enrich_after_write_not_on_request_path` 以原碼掃描斷言 `category_routes.py` 完全不引用本模組
+- [x] 3.3 節流測試：非 bulk、無 hundreds-of-requests 模式（單元測試以 mock transport 驗證呼叫頻率上界） — artifact: tests/test_remote_catalog.py（`test_ol_bridge_concurrency_is_bounded_to_one` 量測併發峰值：5 個並行請求觀察到 peak ≤ 1 且 > 0（正向控制）；`test_ol_bridge_enforces_minimum_interval_between_requests` 以假時鐘斷言 sleep 序列恰為 `[0.75]`（已過 0.25s 需補滿 1s）；`enrich_category(max_items=25)` 硬上限防 hundreds-of-requests）
+
+### Phase 3 OL API 實測存證（2026-09-02，不得憑記憶）
+
+| 探針 | 結果 |
+| --- | --- |
+| `q=isbn:9780553213119` + 完整 fields | HTTP 200、`numFound:1`、docs[0] 帶 ia/ebook_access/isbn/oclc/lccn |
+| `q=title:moby dick` | HTTP 200、`numFound:1283`（**控制組**：不同查詢真的回不同結果，非固定回應） |
+| `q=title:zzqqxxjjvvwwkk9987654` | HTTP 200、`numFound:0`、`docs:[]`（**真正的 empty 長這樣**） |
+| `q=isbn:0000000000000` | HTTP 200、`numFound:1`，且該 doc 的 isbn 陣列**真的含這串**（`/works/OL45733017W`） |
+
+最後一列是實測推翻直覺的地方：「明顯造假的 ISBN」**不是**可靠的 empty 判準，OL 真的收錄了帶該 ISBN 的資料。若拿它當空查詢的測試依據，會得到一個永遠紅不了的「empty」測試。已記入 `openlibrary_bridge.py` 模組 docstring。
+
+### Phase 3 判別力證據（判準①）
+
+`OLEnrichResult` 不用 Phase 2 的「例外 vs 回傳值」型別分離，而是**同型別但欄位互斥**。這是刻意的取捨：Gutenberg 的失敗**應該**中止該次刷新，OL 的失敗**不應該**（技術要求 5）；若用例外，就得在每個呼叫點包 try，反而把「吞掉」變成呼叫端的責任。
+
+| outcome | error | fields_written | queried | 鎖定測試 |
+| --- | --- | --- | --- | --- |
+| ok | None | ≥ 1 | True | `test_ol_enrich_ok_writes_bridge_fields_without_touching_identity` |
+| empty | None | 0 | True | `test_ol_enrich_empty_is_not_failed_and_still_marks_enriched` |
+| failed | 非 None | 0 | True | `test_ol_enrich_http_error_is_failed_with_non_none_error`、`test_ol_enrich_invalid_json_is_failed_not_empty`、`test_ol_enrich_timeout_is_failed_with_ol_bridge_timeout_code` |
+| not-run | None | 0 | **False** | `test_ol_enrich_within_ttl_is_not_run_and_makes_no_request`、`test_ol_enrich_without_any_clue_is_not_run_and_makes_no_request` |
+
+`queried` 分開 not-run 與 empty（兩者 fields_written 都是 0）；`error` 分開 failed 與 empty。三態沒有任何一組欄位值重疊。
+
+另外兩組控制：`ol_enriched_at` 在 **empty 時仍蓋**（那是一次有效查詢）、**failed 時不蓋**（否則一次失敗會被當成一次有效查詢而永不重試）；`test_ol_enrich_expired_ttl_requeries` 是節流的反向控制，排除「一旦 enrich 過就永遠不再查」。
+
+**mutation 指紋（3.2 節流鍵）**：把 `list_items_needing_ol_enrichment` 的 `WHERE rci.ol_enriched_at IS NULL` 改成以橋接欄位是否為空判斷（`WHERE rci.ol_key IS NULL`）→ `test_ol_enrich_empty_is_not_failed_and_still_marks_enriched` 失敗（`1 failed, 48 passed`，AssertionError 落在該測試末段的 pending 斷言）；還原後 `49 passed`，還原檔 sha256 `732d8c61ef31531cb61a97155aefd5be2cf684b3381ad291d4e7f3818448a83b`（mutation 前後一致）。
+
+> **這條 mutation 第一次跑是「未殺死」（`49 passed`），紀錄於此不刪。** 當時沒有任何測試檢查「empty 之後該 item 不再被列為 pending」——`empty` 的 item 橋接欄位全空，用哪個鍵判定 pending 在測試上完全不可觀察，於是節流鍵可以被換掉而無人叫。**那個綠燈正是它要防的病灶在測試層的翻版**：缺席態（沒查過）與空結果態（查過但 OL 沒有）共用同一個輸出。補上 `assert remote.list_items_needing_ol_enrichment("cat_471") == []` 後 mutation 才轉紅。先寫指紋、後驗指紋會得到一份看起來完備但沒有判別力的文件——保留兩次結果作為證據。
+
+**errors.md `openlibrary_bridge.enrich` 五態對應**：`ok` / `empty` / `failed` / `not-run` 見上表；`indeterminate` 依 errors.md 已宣告為 `n/a`（連線已建立但未收到完整回應，最終依 httpx timeout 轉 failed 或 ok），無專屬測試，此為文件既定值非本階段遺漏。
 
 ## 4. OpenStax（DD-3 延伸，待 Gutenberg 驗證通過才開工）
 

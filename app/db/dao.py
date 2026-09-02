@@ -175,9 +175,20 @@ class CatalogDAO:
         # 只有 catalog_id/md5/title/...，缺這兩個新欄位；新 DB 已由 schema.sql
         # 隨表建立時一併帶出，這裡的 ALTER 對它們是 no-op（PRAGMA table_info
         # 已含欄位名，迴圈內 continue 跳過）。
+        # DD-4 Phase 3：Open Library 橋接欄位。全部可空、無 DEFAULT——
+        # 「尚未 enrich」與「enrich 後仍無值」都是 NULL，兩者由
+        # `ol_enriched_at` 區分（見 schema.sql 該欄註解）。additive-only：
+        # 不動 Phase 1 的 (source, source_native_id) 複合唯一索引，也不改
+        # 任何既有欄位語意。
         "remote_catalog_item": [
             ("source", "TEXT NOT NULL DEFAULT 'libgen'"),
             ("source_native_id", "TEXT"),
+            ("ol_key", "TEXT"),
+            ("isbn", "TEXT"),
+            ("oclc", "TEXT"),
+            ("lccn", "TEXT"),
+            ("gutenberg_id", "TEXT"),
+            ("ol_enriched_at", "TEXT"),
         ],
     }
 
