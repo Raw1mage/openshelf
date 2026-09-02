@@ -9,6 +9,17 @@ from bs4 import BeautifulSoup
 log = logging.getLogger(__name__)
 
 
+def make_work_id(source: str, source_native_id: str) -> str:
+    """跨 provider 共用的 work_id 生成函式（DD-1/DD-2, task 1.4）。
+
+    libgen 既有格式 `libgen_{md5}` 不變（向下相容，`source="libgen"` 時
+    `source_native_id` 即既有的 md5 值）；非 libgen 來源沿用同一個
+    `{source}_{source_native_id}` 樣式，與 `remote_catalog_item` 的
+    `(source, source_native_id)` 複合鍵語意一致。
+    """
+    return f"{source}_{source_native_id}"
+
+
 class LibgenCrawler:
     """即時檢索 Libgen 公網鏡像與解析書目元資料（具備極速響應、智慧引文拆解與容錯級聯檢索）。"""
 
@@ -467,7 +478,7 @@ class LibgenCrawler:
             torrent_src = self._extract_torrent_sources(row, base_url)
 
             items.append({
-                "work_id": f"libgen_{md5_val}",
+                "work_id": make_work_id("libgen", md5_val),
                 "title": clean_title,
                 "authors_display": authors or "未知作者",
                 "publisher": publisher,
@@ -478,6 +489,7 @@ class LibgenCrawler:
                 "extension": extension,
                 "size_bytes": size_bytes,
                 "md5": md5_val,
+                "source_native_id": md5_val,
                 "availability_tier": 2,
                 "mirror_links": mirror_links,
                 "torrent_url": torrent_src["torrent_url"],
@@ -549,7 +561,7 @@ class LibgenCrawler:
             torrent_src = self._extract_torrent_sources(row, base_url)
 
             items.append({
-                "work_id": f"libgen_{md5_val}",
+                "work_id": make_work_id("libgen", md5_val),
                 "title": title,
                 "authors_display": authors or "未知作者",
                 "publisher": publisher,
@@ -560,6 +572,7 @@ class LibgenCrawler:
                 "extension": extension,
                 "size_bytes": size_bytes,
                 "md5": md5_val,
+                "source_native_id": md5_val,
                 "availability_tier": 2,
                 "mirror_links": mirror_links,
                 "torrent_url": torrent_src["torrent_url"],

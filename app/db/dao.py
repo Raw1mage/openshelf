@@ -170,6 +170,15 @@ class CatalogDAO:
             ("prompt_version", "TEXT"),
             ("assigned_at", "TEXT"),
         ],
+        # aggregator_multi-source-provider DD-1/DD-2：identity 從單一 md5 主鍵
+        # 重構為 (source, source_native_id) 複合鍵。既有 DB 的 remote_catalog_item
+        # 只有 catalog_id/md5/title/...，缺這兩個新欄位；新 DB 已由 schema.sql
+        # 隨表建立時一併帶出，這裡的 ALTER 對它們是 no-op（PRAGMA table_info
+        # 已含欄位名，迴圈內 continue 跳過）。
+        "remote_catalog_item": [
+            ("source", "TEXT NOT NULL DEFAULT 'libgen'"),
+            ("source_native_id", "TEXT"),
+        ],
     }
 
     # 已完成一次性引導的 DB 路徑（process 層級）。
@@ -220,6 +229,16 @@ class CatalogDAO:
         "CREATE INDEX IF NOT EXISTS idx_download_job_protocol ON download_job(download_protocol)",
         "CREATE INDEX IF NOT EXISTS idx_work_classification_state ON work(classification_state)",
         "CREATE INDEX IF NOT EXISTS idx_work_category_source ON work_category(source)",
+        # DD-1 的複合唯一鍵。放在 _POST_MIGRATION_INDEXES（而非 schema.sql 的
+        # CREATE TABLE 內聯 UNIQUE）是刻意的：既有 DB 的 source_native_id 剛由
+        # 上面的 ALTER 補上、值還是 NULL，必須先跑過 apply_column_migrations()
+        # 內的回填（見下方 _backfill_remote_catalog_identity）才能建這個索引，
+        # 否則语意上「複合鍵」會在回填前的短暫窗口內對舊 libgen rows 全部
+        # 呈現 NULL，索引本身仍可建立（SQLite UNIQUE 對多筆 NULL 不衝突）但
+        # 那正是本次要修的缺陷——不能讓它在還沒回填時就先建好給人一種
+        # 「已生效」的錯覺。回填在下方顯式先跑一次。
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_catalog_item_identity "
+        "ON remote_catalog_item(source, source_native_id)",
     ]
 
     def apply_column_migrations(self) -> List[str]:
@@ -244,7 +263,27 @@ class CatalogDAO:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_ddl}")
                     applied.append(f"{table}.{col_name}")
 
-            # 欄位補齊後才建立相依索引（IF NOT EXISTS，可重複執行）
+            # DD-1/DD-2 回填：既有 libgen rows 在 ALTER 之後 source_native_id
+            # 為 NULL（`source` 欄位有 DEFAULT 'libgen' 故已由 ALTER 補上）。
+            # 用既有 md5 回填 source_native_id，不得遺失資料——libgen 本身沒有
+            # 別的原生識別碼，md5 就是它的 source_native_id。必須在下方建立
+            # 複合唯一索引之前跑完，否則索引會在全 NULL 的窗口期建立，
+            # 對「已生效」造成錯覺（見 _POST_MIGRATION_INDEXES 上方注記）。
+            remote_catalog_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'remote_catalog_item'"
+            ).fetchone()
+            if remote_catalog_exists:
+                backfilled = conn.execute(
+                    """
+                    UPDATE remote_catalog_item
+                    SET source_native_id = md5
+                    WHERE source_native_id IS NULL AND md5 IS NOT NULL
+                    """
+                ).rowcount
+                if backfilled:
+                    applied.append(f"remote_catalog_item.source_native_id(backfilled={backfilled})")
+
+            # 欄位補齊、回填完成後才建立相依索引（IF NOT EXISTS，可重複執行）
             for index_ddl in self._POST_MIGRATION_INDEXES:
                 conn.execute(index_ddl)
         return applied
@@ -809,9 +848,16 @@ class CatalogDAO:
                 """,
                 self._visible_params,
             ).fetchall()
+            # identity 回退鏈（DD-1/DD-2，aggregator_multi-source-provider）：
+            # 優先用 md5 與本地 work 對齊（既有行為）；md5=NULL 的非 libgen
+            # item 回退到 catalog_id（(source, source_native_id) 複合鍵映射出的
+            # 穩定唯一值）。若仍用 'md5:' || lower(NULL) 會讓所有非 libgen
+            # item 共享同一個 NULL identity，在 direct set 裡被合併成一筆，使
+            # works_count 靜默失真——這正是本次要修的缺席態。
             remote_rows = conn.execute(
                 """
-                SELECT rcc.category_id, 'md5:' || lower(rci.md5) AS identity
+                SELECT rcc.category_id,
+                       COALESCE('md5:' || lower(rci.md5), 'rc:' || rci.catalog_id) AS identity
                 FROM remote_catalog_category rcc
                 JOIN remote_catalog_item rci ON rci.catalog_id = rcc.catalog_id
                 """
@@ -899,7 +945,7 @@ class CatalogDAO:
                     LEFT JOIN identifier i ON i.work_id = vwc.work_id AND i.scheme = 'md5'
                     WHERE vwc.category_id IN ({placeholders})
                     UNION
-                    SELECT 'md5:' || lower(rci.md5) AS identity
+                    SELECT COALESCE('md5:' || lower(rci.md5), 'rc:' || rci.catalog_id) AS identity
                     FROM remote_catalog_category rcc
                     JOIN remote_catalog_item rci ON rci.catalog_id = rcc.catalog_id
                     WHERE rcc.category_id IN ({placeholders})

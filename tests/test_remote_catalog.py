@@ -91,6 +91,83 @@ def test_second_batch_absence_does_not_delete_first_batch(catalog):
     assert {item["md5"] for item in items} == {"d" * 32, "e" * 32}
 
 
+def non_libgen_item(source: str, source_native_id: str, title: str):
+    """md5=NULL 的非 libgen item（DD-1/DD-2 反向控制組用）。"""
+    return {
+        "md5": None,
+        "source": source,
+        "source_native_id": source_native_id,
+        "title": title,
+        "authors_display": "遠端作者",
+        "publication_year": 2026,
+        "language": "en",
+        "format": "epub",
+        "extension": "epub",
+        "size_bytes": 5678,
+        "mirror_links": [],
+    }
+
+
+def test_null_md5_different_sources_are_not_collapsed(catalog):
+    """tasks.md 1.3 反向控制組①：2 筆 md5=NULL、不同 (source, source_native_id)
+
+    的 item，去重總數必須是 2，不得互撞。這是本次要修的核心缺陷——SQLite
+    對多筆 NULL 不觸發 UNIQUE 衝突，若 identity 仍以 md5 為鍵，這兩筆會
+    被靜默判定為同一本書。
+    """
+    remote, _ = catalog
+    first = non_libgen_item("gutenberg", "1001", "Gutenberg 版《書 A》")
+    second = non_libgen_item("openstax", "42", "OpenStax 版《書 B》")
+
+    added1, updated1 = remote.upsert_batch("cat_471", "python", [first])
+    added2, updated2 = remote.upsert_batch("cat_471", "python", [second])
+    assert (added1, updated1) == (1, 0)
+    assert (added2, updated2) == (1, 0)
+
+    total, items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 2
+    assert {item["title"] for item in items} == {
+        "Gutenberg 版《書 A》",
+        "OpenStax 版《書 B》",
+    }
+
+
+def test_same_composite_key_upsert_twice_keeps_one(catalog):
+    """tasks.md 1.3 反向控制組②：同一個 (source, source_native_id) 兩次
+
+    upsert，去重總數必須是 1（正確識別為同一本書並更新，而非新增第二筆）。
+    """
+    remote, _ = catalog
+    item = non_libgen_item("gutenberg", "2701", "白鯨記 第一版")
+
+    assert remote.upsert_batch("cat_471", "python", [item]) == (1, 0)
+    assert remote.upsert_batch(
+        "cat_471", "python", [{**item, "title": "白鯨記 修訂版"}]
+    ) == (0, 1)
+
+    total, items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 1
+    assert len(items) == 1
+    assert items[0]["title"] == "白鯨記 修訂版"
+
+
+def test_missing_source_native_id_and_md5_is_rejected_not_run(catalog):
+    """errors.md identity.upsert = not-run：呼叫端未帶 source_native_id 且無
+
+    md5 可回退時，本筆必須被拒絕不寫入，不得靜默塞入一筆猜測資料。
+    """
+    remote, _ = catalog
+    broken = non_libgen_item("gutenberg", "", "缺 ID 的書")
+    broken["md5"] = None
+
+    added, updated = remote.upsert_batch("cat_471", "python", [broken])
+    assert (added, updated) == (0, 0)
+
+    total, items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 0
+    assert items == []
+
+
 def test_failed_refresh_keeps_persisted_items(catalog):
     remote, _ = catalog
     persisted = [

@@ -108,29 +108,54 @@ class RemoteCatalogDAO:
     def upsert_batch(
         self, category_id: str, query_term: str, items: List[Dict[str, Any]]
     ) -> Tuple[int, int]:
+        """插入/更新遠端書目，並掛上分類。
+
+        Identity 重構（DD-1/DD-2, aggregator_multi-source-provider）：判斷「這是不是
+        同一本書」的鍵是 `(source, source_native_id)`，不再是 `md5`。md5 降級為
+        可空的橋接欄位——libgen 目前仍把 md5 當自己的原生 ID（`source_native_id`
+        直接沿用 md5 值），故對 libgen 呼叫端行為不變；非 libgen 來源（例如
+        Gutenberg）item 需自帶 `source_native_id`，沒有 md5 也能正確去重，
+        不再落入「多筆 md5=NULL 互不衝突」的靜默去重失效。
+
+        outcome codomain（errors.md `identity.upsert`）：呼叫端未帶
+        `source_native_id` 且沒有 md5 可回退時，本筆視為 `not-run`（拒絕寫入，
+        不計入 added/updated），不得靜默吞掉——上游 provider 契約缺失時，
+        沉默塞入一筆猜測值只會讓下一輪去重更難排查。
+        """
         now = self._now()
         added = 0
         updated = 0
         with self.engine.session() as conn:
             for item in items:
-                md5 = str(item.get("md5") or "").strip().lower()
-                if len(md5) != 32:
+                source = str(item.get("source") or "libgen").strip()
+                md5_raw = str(item.get("md5") or "").strip().lower()
+                md5 = md5_raw if len(md5_raw) == 32 else None
+                # 非 libgen 呼叫端須自帶 source_native_id；libgen 呼叫端目前尚未
+                # 傳這個欄位（見 libgen_live.py 的 item dict），故此處以 md5 回退，
+                # 對既有呼叫端零行為差異。
+                source_native_id = str(item.get("source_native_id") or md5 or "").strip()
+                if not source_native_id:
+                    # identity.upsert = not-run：上游未帶可用的原生 ID，提前拒絕
+                    # 不寫入（errors.md 已宣告此狀態），不得落成一筆猜測資料。
                     continue
-                catalog_id = f"md5:{md5}"
-                exists = conn.execute(
-                    "SELECT 1 FROM remote_catalog_item WHERE catalog_id = ?", (catalog_id,)
+                existing = conn.execute(
+                    "SELECT catalog_id FROM remote_catalog_item WHERE source = ? AND source_native_id = ?",
+                    (source, source_native_id),
                 ).fetchone()
+                catalog_id = existing["catalog_id"] if existing else f"rc_{uuid.uuid4().hex[:20]}"
                 conn.execute(
                     """
                     INSERT INTO remote_catalog_item
-                        (catalog_id, md5, title, authors_display, publication_year,
-                         language, format, extension, size_bytes, first_seen_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(catalog_id) DO UPDATE SET
+                        (catalog_id, source, source_native_id, md5, title, authors_display,
+                         publication_year, language, format, extension, size_bytes,
+                         first_seen_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source, source_native_id) DO UPDATE SET
                         title = CASE
                             WHEN excluded.title = '未知書名' THEN remote_catalog_item.title
                             ELSE excluded.title
                         END,
+                        md5 = COALESCE(excluded.md5, remote_catalog_item.md5),
                         authors_display = COALESCE(excluded.authors_display, remote_catalog_item.authors_display),
                         publication_year = COALESCE(excluded.publication_year, remote_catalog_item.publication_year),
                         language = COALESCE(excluded.language, remote_catalog_item.language),
@@ -139,16 +164,17 @@ class RemoteCatalogDAO:
                         size_bytes = COALESCE(excluded.size_bytes, remote_catalog_item.size_bytes),
                         last_seen_at = excluded.last_seen_at
                     """,
-                    (catalog_id, md5, item.get("title") or "未知書名",
+                    (catalog_id, source, source_native_id, md5, item.get("title") or "未知書名",
                      item.get("authors_display"), item.get("publication_year"),
                      item.get("language"), item.get("format"), item.get("extension"),
                      item.get("size_bytes"), now, now),
                 )
-                added += 0 if exists else 1
-                updated += 1 if exists else 0
-                source = item.get("source") or "libgen"
+                added += 0 if existing else 1
+                updated += 1 if existing else 0
                 links = item.get("mirror_links") or []
                 external_url = links[0] if links else None
+                # source_key 沿用 source_native_id（對 libgen 等於既有的 md5 行為，
+                # 零差異；對非 libgen 來源則是它自己的原生 ID）。
                 conn.execute(
                     """
                     INSERT INTO remote_catalog_source
@@ -169,7 +195,7 @@ class RemoteCatalogDAO:
                         peers_count = COALESCE(excluded.peers_count, remote_catalog_source.peers_count),
                         last_seen_at = excluded.last_seen_at
                     """,
-                    (catalog_id, source, md5, external_url, json.dumps(links),
+                    (catalog_id, source, source_native_id, external_url, json.dumps(links),
                      item.get("torrent_url"), item.get("magnet_uri"),
                      item.get("download_protocol") or "http", item.get("peers_count"),
                      now, now),
@@ -216,8 +242,16 @@ class RemoteCatalogDAO:
                 LEFT JOIN identifier i ON i.work_id = w.work_id AND i.scheme = 'md5'
                 WHERE w.classification_state = 'classified' OR wc.source = 'manual'
                 UNION ALL
-                SELECT 'md5:' || lower(rci.md5), 1,
-                       'libgen_' || lower(rci.md5), NULL, rci.title,
+                -- identity 回退鏈（DD-1/DD-2）：優先用 md5 與本地 work 對齊
+                -- （既有行為，libgen 下載後可判定「已在本地」）；md5 為 NULL
+                -- 的非 libgen item 一律回退到 catalog_id——它現在是
+                -- (source, source_native_id) 複合鍵映射出的穩定唯一值。
+                -- 若沒有這個回退，多筆 md5=NULL 的 row 會共享同一個 NULL
+                -- identity，PARTITION BY 把它們併成一組，只有 rn=1 那筆
+                -- 存活，其餘被 `WHERE rn = 1` 濾掉——這正是本次要修的
+                -- 靜默去重失效在讀路徑上的翻版。
+                SELECT COALESCE('md5:' || lower(rci.md5), 'rc:' || rci.catalog_id), 1,
+                       COALESCE('libgen_' || lower(rci.md5), rci.catalog_id), NULL, rci.title,
                        rci.authors_display, rci.publication_year, rci.language,
                        rci.format, rci.size_bytes, lower(rci.md5), rci.extension,
                        COALESCE(rcs.download_protocol, 'http'), rcs.torrent_url,

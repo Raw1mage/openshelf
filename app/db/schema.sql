@@ -180,7 +180,16 @@ CREATE INDEX IF NOT EXISTS idx_work_category_cat ON work_category(category_id);
 
 CREATE TABLE IF NOT EXISTS remote_catalog_item (
     catalog_id TEXT PRIMARY KEY,
-    md5 TEXT UNIQUE,
+    -- Identity 重構（DD-1/DD-2, aggregator_multi-source-provider）：
+    -- `md5 TEXT UNIQUE` 曾是唯一識別碼，但 SQLite 對多筆 NULL 值不觸發 UNIQUE
+    -- 衝突——非 libgen 來源（無 md5）進來時會靜默失去去重。identity 主鍵改為
+    -- `source`/`source_native_id`；md5 降級為可空、非唯一的橋接欄位（既有
+    -- libgen 下載流程仍依賴它，不可斷）。複合唯一索引與新欄位在舊 DB 上
+    -- 由 CatalogDAO.apply_column_migrations() 於 ALTER 完成後建立/回填
+    -- （理由同上方 manifestation/work_category 的欄位遷移注記）。
+    source TEXT NOT NULL DEFAULT 'libgen',
+    source_native_id TEXT,
+    md5 TEXT,
     title TEXT NOT NULL,
     authors_display TEXT,
     publication_year INTEGER,
