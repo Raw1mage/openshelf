@@ -17,7 +17,7 @@ Every outcome names the site that emits it. An outcome nobody emits is a comment
 | gutenberg_provider.refresh | ok | ok | 本次抓取成功，所有頁均取得 | app/crawler/gutenberg_provider.py |
 | gutenberg_provider.refresh | failed | failed | 全鏡像/catalog CSV 下載失敗、解析失敗，舊 rows 保留不刪 | app/crawler/remote_catalog_refresh.py |
 | gutenberg_provider.refresh | empty | empty | catalog 回傳 0 筆但操作成功（異常但不是錯誤） | app/crawler/gutenberg_provider.py |
-| gutenberg_provider.refresh | not-run | not-run | 節流或兩次刷新間隔未到，本輪跳過 | app/crawler/remote_catalog_refresh.py |
+| gutenberg_provider.refresh | not-run | not-run | 未設定 provider，本輪跳過（不開 refresh row） | app/crawler/remote_catalog_refresh.py |
 | gutenberg_provider.refresh | n/a (網路途中中斷未回覆) | indeterminate | timeout 尚未觸發但連線已建立，尚未收到完整回應 | n/a (依 httpx timeout 設定，最終會轉 failed 或 ok) |
 | openstax_provider.refresh | ok | ok | 全量分頁拉完，產出 >= 1 本 | app/crawler/openstax_provider.py |
 | openstax_provider.refresh | failed | failed | API 下載/解析失敗、HTTP 非 2xx（含 `fields=` 帶未知欄位名的 400），舊 rows 保留不刪 | app/crawler/remote_catalog_refresh.py |

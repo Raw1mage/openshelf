@@ -129,9 +129,18 @@ class RemoteCatalogRefresher:
             )
             return "failed"
 
-        added, updated = await asyncio.to_thread(
+        added, updated, rejected = await asyncio.to_thread(
             self.dao.upsert_batch, category_id, query_term, result.items
         )
+        if rejected:
+            # identity.upsert 的 not-run 在這裡浮上來（VANS 5-A）。provider 契約
+            # 缺失是上游缺陷，不是本次刷新失敗，故不改 refresh status；但也不得
+            # 讓它完全無聲——items_seen 與 added+updated 的落差在這裡有名字。
+            log.warning(
+                "gutenberg refresh: %d 筆缺 source_native_id 被拒絕寫入 (category=%s)",
+                rejected,
+                category_id,
+            )
         await asyncio.to_thread(
             self.dao.finish_refresh,
             refresh_id,
@@ -189,9 +198,15 @@ class RemoteCatalogRefresher:
             )
             return "failed"
 
-        added, updated = await asyncio.to_thread(
+        added, updated, rejected = await asyncio.to_thread(
             self.dao.upsert_batch, category_id, query_term, result.items
         )
+        if rejected:
+            log.warning(
+                "openstax refresh: %d 筆缺 source_native_id 被拒絕寫入 (category=%s)",
+                rejected,
+                category_id,
+            )
         await asyncio.to_thread(
             self.dao.finish_refresh,
             refresh_id,
@@ -223,11 +238,19 @@ class RemoteCatalogRefresher:
                 cursor = result["cursor"]
                 pages_fetched += 1
                 items_seen += len(batch)
-                added, updated = await asyncio.to_thread(
+                added, updated, rejected = await asyncio.to_thread(
                     self.dao.upsert_batch, category_id, query_term, batch
                 )
                 items_added += added
                 items_updated += updated
+                if rejected:
+                    log.warning(
+                        "libgen refresh: %d 筆缺 source_native_id 被拒絕寫入 "
+                        "(category=%s, page=%d)",
+                        rejected,
+                        category_id,
+                        page,
+                    )
                 next_page = result.get("next_page")
                 if next_page is None:
                     break

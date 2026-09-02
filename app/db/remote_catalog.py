@@ -108,8 +108,8 @@ class RemoteCatalogDAO:
 
     def upsert_batch(
         self, category_id: str, query_term: str, items: List[Dict[str, Any]]
-    ) -> Tuple[int, int]:
-        """插入/更新遠端書目，並掛上分類。
+    ) -> Tuple[int, int, int]:
+        """插入/更新遠端書目，並掛上分類。回傳 `(added, updated, rejected)`。
 
         Identity 重構（DD-1/DD-2, aggregator_multi-source-provider）：判斷「這是不是
         同一本書」的鍵是 `(source, source_native_id)`，不再是 `md5`。md5 降級為
@@ -122,10 +122,22 @@ class RemoteCatalogDAO:
         `source_native_id` 且沒有 md5 可回退時，本筆視為 `not-run`（拒絕寫入，
         不計入 added/updated），不得靜默吞掉——上游 provider 契約缺失時，
         沉默塞入一筆猜測值只會讓下一輪去重更難排查。
+
+        **`rejected` 是那個 not-run 狀態的排放點（VANS 5-A）。** 它存在的理由不是
+        「多回一個數字比較完整」，而是：舊版回 `(added, updated)` 兩元組時，
+        「2 筆合法」與「3 筆中 1 筆缺 identity 被丟掉」**回傳值逐字相同都是
+        `(2, 0)`**——即 not-run 與 ok 共用同一個輸出，呼叫端沒有任何管道可以
+        分辨。這正是判準①禁止的形狀，而且比一般的缺陷更難抓：下游看到的是
+        一個完全合理的成功數字。只寫 log 不行——log 不在回傳值上，呼叫端
+        無法對它做判斷，測試也難以鎖定。
+
+        回傳值從兩元組改為三元組是 **breaking change 且刻意如此**：舊呼叫端只
+        解構 2 個值會當場 `ValueError` 炒掉（fail-fast），而不是静默拿到錯的數字。
         """
         now = self._now()
         added = 0
         updated = 0
+        rejected = 0
         with self.engine.session() as conn:
             for item in items:
                 source = str(item.get("source") or "libgen").strip()
@@ -138,6 +150,9 @@ class RemoteCatalogDAO:
                 if not source_native_id:
                     # identity.upsert = not-run：上游未帶可用的原生 ID，提前拒絕
                     # 不寫入（errors.md 已宣告此狀態），不得落成一筆猜測資料。
+                    # 計數而非裸 continue：裸 continue 會讓這個 not-run 沒有排放點，
+                    # 於是它在回傳值上與「本來就少一筆」逐字不可區分。
+                    rejected += 1
                     continue
                 existing = conn.execute(
                     "SELECT catalog_id FROM remote_catalog_item WHERE source = ? AND source_native_id = ?",
@@ -213,7 +228,7 @@ class RemoteCatalogDAO:
                     """,
                     (catalog_id, category_id, query_term, now, now),
                 )
-        return added, updated
+        return added, updated, rejected
 
 
     # === Open Library 橋接欄位（DD-4, Phase 3）===

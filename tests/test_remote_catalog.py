@@ -58,8 +58,8 @@ def test_same_md5_upsert_twice_keeps_one_distinct_item(catalog):
     remote, _ = catalog
     item = remote_item("a" * 32, "第一版書名")
 
-    assert remote.upsert_batch("cat_471", "python", [item]) == (1, 0)
-    assert remote.upsert_batch("cat_471", "python", [{**item, "title": "新版書名"}]) == (0, 1)
+    assert remote.upsert_batch("cat_471", "python", [item]) == (1, 0, 0)
+    assert remote.upsert_batch("cat_471", "python", [{**item, "title": "新版書名"}]) == (0, 1, 0)
 
     total, items = remote.query_browseable("cat_471", page=1, page_size=20)
     assert total == 1
@@ -73,11 +73,11 @@ def test_catalog_survives_dao_reopen_and_repeat_upsert_is_idempotent(tmp_path):
     CatalogDAO(engine=first_engine)
     first_remote = RemoteCatalogDAO(engine=first_engine)
     item = remote_item("9" * 32, "重啟後仍存在")
-    assert first_remote.upsert_batch("cat_471", "python", [item]) == (1, 0)
+    assert first_remote.upsert_batch("cat_471", "python", [item]) == (1, 0, 0)
 
     reopened_engine = DatabaseEngine(db_path=db_path)
     reopened_remote = RemoteCatalogDAO(engine=reopened_engine)
-    assert reopened_remote.upsert_batch("cat_471", "python", [item]) == (0, 1)
+    assert reopened_remote.upsert_batch("cat_471", "python", [item]) == (0, 1, 0)
     total, items = reopened_remote.query_browseable("cat_471", page=1, page_size=20)
 
     assert total == 1
@@ -141,10 +141,10 @@ def test_null_md5_different_sources_are_not_collapsed(catalog):
     first = non_libgen_item("gutenberg", "1001", "Gutenberg 版《書 A》")
     second = non_libgen_item("openstax", "42", "OpenStax 版《書 B》")
 
-    added1, updated1 = remote.upsert_batch("cat_471", "python", [first])
-    added2, updated2 = remote.upsert_batch("cat_471", "python", [second])
-    assert (added1, updated1) == (1, 0)
-    assert (added2, updated2) == (1, 0)
+    added1, updated1, rejected1 = remote.upsert_batch("cat_471", "python", [first])
+    added2, updated2, rejected2 = remote.upsert_batch("cat_471", "python", [second])
+    assert (added1, updated1, rejected1) == (1, 0, 0)
+    assert (added2, updated2, rejected2) == (1, 0, 0)
 
     total, items = remote.query_browseable("cat_471", page=1, page_size=20)
     assert total == 2
@@ -162,10 +162,10 @@ def test_same_composite_key_upsert_twice_keeps_one(catalog):
     remote, _ = catalog
     item = non_libgen_item("gutenberg", "2701", "白鯨記 第一版")
 
-    assert remote.upsert_batch("cat_471", "python", [item]) == (1, 0)
+    assert remote.upsert_batch("cat_471", "python", [item]) == (1, 0, 0)
     assert remote.upsert_batch(
         "cat_471", "python", [{**item, "title": "白鯨記 修訂版"}]
-    ) == (0, 1)
+    ) == (0, 1, 0)
 
     total, items = remote.query_browseable("cat_471", page=1, page_size=20)
     assert total == 1
@@ -182,12 +182,53 @@ def test_missing_source_native_id_and_md5_is_rejected_not_run(catalog):
     broken = non_libgen_item("gutenberg", "", "缺 ID 的書")
     broken["md5"] = None
 
-    added, updated = remote.upsert_batch("cat_471", "python", [broken])
-    assert (added, updated) == (0, 0)
+    added, updated, rejected = remote.upsert_batch("cat_471", "python", [broken])
+    assert (added, updated, rejected) == (0, 0, 1)
 
     total, items = remote.query_browseable("cat_471", page=1, page_size=20)
     assert total == 0
     assert items == []
+
+
+def test_rejected_count_distinguishes_not_run_from_a_smaller_clean_batch(catalog):
+    """VANS 5-A：`not-run` 必須有排放點，不得與 `ok` 共用同一個回傳值。
+
+    這條測的不是「rejected 會不會計數」，而是**兩個情境的回傳值能不能被
+    呼叫端分辨**。修正前 `upsert_batch` 只回 `(added, updated)`，於是：
+
+        2 筆全合法                  → (2, 0)
+        3 筆中 1 筆缺 identity      → (2, 0)   ← 逐字相同
+
+    下游看到的是一個完全合理的成功數字，沒有任何管道能問出「有沒有東西被
+    丟掉」。這正是缺席態（本來就只有 2 筆）與失敗態（有 1 筆被靜默拒絕）
+    共用輸出。斷言寫成兩個情境**互相比對**而非各自比對常數，是刻意的——
+    若有人把 rejected 改成恆 0，`clean != dirty` 這行會立刻紅，而分別對
+    常數斷言的寫法可能因為兩邊都被一起改掉而繼續綠。
+    """
+    remote, _ = catalog
+    clean_batch = [
+        non_libgen_item("gutenberg", "3001", "合法的書 A"),
+        non_libgen_item("gutenberg", "3002", "合法的書 B"),
+    ]
+    dirty_batch = [
+        non_libgen_item("openstax", "4001", "合法的書 C"),
+        non_libgen_item("openstax", "4002", "合法的書 D"),
+        {**non_libgen_item("openstax", "", "缺 identity 的書"), "md5": None},
+    ]
+
+    clean = remote.upsert_batch("cat_471", "python", clean_batch)
+    dirty = remote.upsert_batch("cat_472", "python", dirty_batch)
+
+    # 正向控制：兩批的「寫入成功數」刻意相同，這是本缺陷當初能藏住的原因。
+    assert clean[:2] == dirty[:2] == (2, 0)
+    # 判別力本體：加上 rejected 之後，兩者在回傳值上必須不再相同。
+    assert clean != dirty
+    assert clean == (2, 0, 0)
+    assert dirty == (2, 0, 1)
+
+    # 反向控制：被拒絕那筆確實沒有落成資料（rejected 不是只加了個沒意義的數字）。
+    total, _items = remote.query_browseable("cat_472", page=1, page_size=20)
+    assert total == 2
 
 
 def test_failed_refresh_keeps_persisted_items(catalog):
