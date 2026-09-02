@@ -196,5 +196,5 @@ Dataset 89 / Image 33 / MovingImage 8 / Collection 4 / StillImage 3）。`gutenb
 
 ## 6. 收尾
 
-- [ ] 6.1 完整測試套件通過、VANS 獨立稽核 identity 重構與 mutation 控制組 — artifact: verb:plan_closeout
-- [ ] 6.2 event log + architecture sync 判定 — artifact: verb:event_record
+- [x] 6.1 完整測試套件通過、VANS 獨立稽核 identity 重構與 mutation 控制組 — artifact: verb:plan_closeout（VANS session `ses_f9ed1018effeRrVImqGd38dYpU`（claude-cli/claude-opus-5）首輪稽核 e5c9c8f..c69ff3e7：7/8 cleared，1 項 request-changes（`upsert_batch` not-run/ok 共用輸出，判準①違反）；handler 修正後複驗 **cleared**。最終 commit `b971521f`。完整測試套件：**492 passed, 27 skipped, rc=0**）
+- [x] 6.2 event log + architecture sync 判定 — artifact: verb:event_record（Phase 1-6 逐階段皆已記錄，Phase 6 收尾兩筆：`event_2026-09-02_aggregator-multi-source-provider-phase-6-vans_jufpqc`、`event_2026-09-02_aggregator-multi-source-provider-phase-6-architect_jufpvs`）

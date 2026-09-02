@@ -1,0 +1,35 @@
+[
+  {
+    "$scaffold": "plan-builder:scaffold",
+    "StepNumber": 0,
+    "ModuleRef": "A1",
+    "StepType": "initial",
+    "StepAction": "<placeholder: initial step of aggregator_multi-source-provider>",
+    "LinkInputType": [],
+    "LinkInputNumber": [],
+    "LinkOutputNumber": [
+      1
+    ],
+    "LinkOutputType": "track",
+    "Condition": [
+      "<placeholder transition condition>"
+    ],
+    "SubGrafcet": []
+  },
+  {
+    "StepNumber": 1,
+    "ModuleRef": "A1",
+    "StepType": "normal",
+    "StepAction": "<placeholder: next step action>",
+    "LinkInputType": [
+      "track"
+    ],
+    "LinkInputNumber": [
+      0
+    ],
+    "LinkOutputNumber": [],
+    "LinkOutputType": "track",
+    "Condition": [],
+    "SubGrafcet": []
+  }
+]

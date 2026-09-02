@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "state": "verified",
+  "profile": [],
+  "history": [
+    {
+      "from": null,
+      "to": "proposed",
+      "at": "2026-09-02T04:15:48.808Z",
+      "by": "pkcs12",
+      "mode": "new",
+      "reason": "initial spec created via plan-init.ts"
+    },
+    {
+      "from": "proposed",
+      "to": "verified",
+      "at": "2026-09-02T08:39:26.843Z",
+      "by": "pkcs12",
+      "mode": "migration",
+      "reason": "Phase 1-6 全數 commit+push+驗收+VANS 獨立稽核 cleared，全套件 492 passed 27 skipped rc=0，收尾三債齊全"
+    }
+  ],
+  "tasks_contract": {
+    "version": "1"
+  },
+  "outcome_contract": {
+    "version": "1"
+  }
+}

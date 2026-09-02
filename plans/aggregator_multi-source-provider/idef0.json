@@ -1,0 +1,43 @@
+{
+  "$scaffold": "plan-builder:scaffold",
+  "diagram_title": "<placeholder: what aggregator_multi-source-provider does>",
+  "node_reference": "A0",
+  "activities": [
+    {
+      "id": "A1",
+      "title": "<placeholder activity>",
+      "description": "<placeholder: what this activity transforms>",
+      "decomposition": null
+    }
+  ],
+  "arrows": [
+    {
+      "id": "AR1",
+      "source": "EXTERNAL",
+      "target": "A1:input",
+      "type": "input",
+      "label": "<placeholder input>"
+    },
+    {
+      "id": "AR2",
+      "source": "EXTERNAL",
+      "target": "A1:control",
+      "type": "control",
+      "label": "<placeholder control>"
+    },
+    {
+      "id": "AR3",
+      "source": "EXTERNAL",
+      "target": "A1:mechanism",
+      "type": "mechanism",
+      "label": "<placeholder mechanism>"
+    },
+    {
+      "id": "AR4",
+      "source": "A1:output",
+      "target": "EXTERNAL",
+      "type": "output",
+      "label": "<placeholder output>"
+    }
+  ]
+}

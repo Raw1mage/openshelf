@@ -1,0 +1,16 @@
+{
+  "$scaffold": "plan-builder:scaffold",
+  "schemas": [
+    {
+      "name": "<placeholder schema name>",
+      "kind": "<table|json|message|config>",
+      "fields": [
+        {
+          "name": "<field>",
+          "type": "<type>",
+          "notes": "<placeholder>"
+        }
+      ]
+    }
+  ]
+}

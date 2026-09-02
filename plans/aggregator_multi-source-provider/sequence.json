@@ -1,0 +1,17 @@
+[
+  {
+    "$scaffold": "plan-builder:scaffold",
+    "title": "<placeholder sequence name>",
+    "participants": [
+      "<ActorA>",
+      "<ActorB>"
+    ],
+    "messages": [
+      {
+        "from": "<ActorA>",
+        "to": "<ActorB>",
+        "label": "<message>"
+      }
+    ]
+  }
+]
