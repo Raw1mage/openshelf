@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.db.engine import DatabaseEngine
+from app.models.catalog import license_for_source
 
 
 class RemoteCatalogDAO:
@@ -235,7 +236,7 @@ class RemoteCatalogDAO:
                         WHERE m.work_id = w.work_id LIMIT 1) size_bytes,
                        lower(i.value) md5, NULL extension, 'http' download_protocol,
                        NULL torrent_url, NULL magnet_uri, NULL peers_count,
-                       '[]' mirror_links_json
+                       '[]' mirror_links_json, 'local' source
                 FROM work w
                 JOIN work_category wc ON wc.work_id = w.work_id
                 JOIN scope s ON s.category_id = wc.category_id
@@ -256,7 +257,7 @@ class RemoteCatalogDAO:
                        rci.format, rci.size_bytes, lower(rci.md5), rci.extension,
                        COALESCE(rcs.download_protocol, 'http'), rcs.torrent_url,
                        rcs.magnet_uri, rcs.peers_count,
-                       COALESCE(rcs.mirror_links_json, '[]')
+                       COALESCE(rcs.mirror_links_json, '[]'), rci.source
                 FROM remote_catalog_item rci
                 JOIN remote_catalog_category rcc ON rcc.catalog_id = rci.catalog_id
                 JOIN scope s ON s.category_id = rcc.category_id
@@ -279,6 +280,10 @@ class RemoteCatalogDAO:
             item = dict(row)
             item["availability_tier"] = item.pop("priority")
             item["mirror_links"] = json.loads(item.pop("mirror_links_json") or "[]")
+            # 授權標示由 source 推導（tasks.md 2.2），不落地到 schema——它是來源
+            # 的性質而非逐筆資料，寫進 DB 反而會讓同一來源的舊 rows 停留在
+            # 舊授權字串上。未登錄來源回 None（空白），不得套用預設公版。
+            item["license"] = license_for_source(item.get("source"))
             item.pop("identity", None)
             item.pop("rn", None)
             items.append(item)

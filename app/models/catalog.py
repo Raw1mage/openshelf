@@ -29,6 +29,26 @@ class FileObjectRead(BaseModel):
 DownloadProtocol = Literal["http", "torrent"]
 
 
+# 每個來源的授權標示（tasks.md 2.2；design.md Risks「Gutenberg 授權非全球公版」）。
+#
+# **字面值就是契約**：Project Gutenberg 的 `dcterms:rights` 逐字是
+# "Public domain in the USA."——只在美國境內為公版。這裡不得改寫成「公版」
+# 或 "public domain"，那會把一個有地域限制的授權暗示成全球通用。
+#
+# libgen 沒有可宣告的授權（來源本身不提供授權資訊），故值為 None——
+# 這與「尚未查到」是不同的意思：前者是來源性質，UI 顯示空白即正確。
+SOURCE_LICENSE_LABEL: dict[str, Optional[str]] = {
+    "gutenberg": "Public domain in the USA.",
+}
+
+
+def license_for_source(source: Optional[str]) -> Optional[str]:
+    """由來源推導授權標示。未登錄的來源回 None（不猜、不套用預設授權）。"""
+    if not source:
+        return None
+    return SOURCE_LICENSE_LABEL.get(source)
+
+
 class TorrentSourceMixin(BaseModel):
     torrent_url: Optional[str] = None
     magnet_uri: Optional[str] = None
@@ -115,6 +135,9 @@ class SearchResultItem(TorrentSourceMixin):
     extension: Optional[str] = None
     mirror_links: List[str] = []
     availability_tier: int = 0
+    source: Optional[str] = None
+    # 逐項授權（tasks.md 2.2）。None = 該來源未宣告授權，不是「公版」。
+    license: Optional[str] = None
     snippet: Optional[str] = None
     progress_ratio: Optional[float] = None
 

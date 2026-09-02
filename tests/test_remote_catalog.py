@@ -3,11 +3,19 @@ import asyncio
 import httpx
 import pytest
 
-from app.crawler.libgen_live import LibgenCrawler
+from app.crawler.gutenberg_provider import (
+    GUTENBERG_CATALOG_URL,
+    GUTENBERG_LICENSE,
+    GutenbergFetchError,
+    GutenbergProvider,
+    parse_catalog_csv,
+)
+from app.crawler.libgen_live import LibgenCrawler, make_work_id
 from app.crawler.remote_catalog_refresh import RemoteCatalogRefresher
 from app.db.dao import CatalogDAO
 from app.db.engine import DatabaseEngine
 from app.db.remote_catalog import RemoteCatalogDAO
+from app.models.catalog import SearchResultItem
 
 
 @pytest.fixture
@@ -300,6 +308,416 @@ async def test_http_exception_marks_refresh_failed_and_preserves_old_rows(catalo
     assert [item["md5"] for item in items] == ["7" * 32]
     assert status["status"] == "failed"
     assert "network unavailable" in status["error"]
+
+
+# === Gutenberg provider（tasks.md 2.1-2.5）===
+
+CSV_HEADER = "Text#,Type,Issued,Title,Language,Authors,Subjects,LoCC,Bookshelves\n"
+CSV_TWO_ROWS = CSV_HEADER + (
+    "1,Text,1971-12-01,The Declaration of Independence,en,\"Jefferson, Thomas\",Politics,E201,Politics\n"
+    "2701,Text,2001-06-01,Moby Dick,en,\"Melville, Herman\",Whaling,PS,Adventure\n"
+)
+# 合法但 0 筆的 catalog：只有表頭。這是 `empty`，**不是** failed。
+CSV_HEADER_ONLY = CSV_HEADER
+
+
+def _csv_transport(body: str, status_code: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, text=body)
+
+    return httpx.MockTransport(handler)
+
+
+def test_gutenberg_catalog_url_is_the_official_documented_path():
+    """2026-09-02 實證：此 URL 回 HTTP 200 + content-type text/csv（21,196,613 bytes）。
+
+    同 host 的不存在路徑回 404（負向控制），故 200 不是「什麼都回 200」的假象。
+    此測試鎖住字面值，避免日後被憑記憶改成猜測值。
+    """
+    assert GUTENBERG_CATALOG_URL == (
+        "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv"
+    )
+
+
+def test_parse_catalog_csv_produces_source_scoped_identity_without_md5():
+    """2.1 正向控制組：解析器對真的有東西的 CSV 必須回非空。
+
+    這是判準①要求的正控制——沒有它，下面 `empty` 那條測試回 0 筆時，
+    無法分辨是「CSV 真的沒東西」還是「解析器根本壞了永遠回 0」。
+    """
+    items = parse_catalog_csv(CSV_TWO_ROWS)
+
+    assert len(items) == 2
+    assert [item["source_native_id"] for item in items] == ["1", "2701"]
+    assert {item["source"] for item in items} == {"gutenberg"}
+    assert all(item["md5"] is None for item in items)
+    # 1.4 的共用函式必須被重用，不得在 provider 內重刻一份格式。
+    assert items[1]["work_id"] == make_work_id("gutenberg", "2701")
+    assert items[1]["publication_year"] == 2001
+
+
+def test_parse_catalog_csv_on_header_only_is_empty_not_an_error():
+    """與上一條配對：同一支解析器對「只有表頭」回 0 筆且不丟例外。
+
+    上一條證明它有東西時會回非空 ⇒ 這裡的 0 筆是真的 0 筆，不是壞掉。
+    """
+    assert parse_catalog_csv(CSV_HEADER_ONLY) == []
+
+
+def test_gutenberg_license_is_usa_scoped_literal_not_a_generic_public_domain():
+    """2.2：授權字面值必須逐字是 `Public domain in the USA.`。
+
+    反向斷言同樣重要——若有人把它改成「公版」或 "public domain"，
+    那會把一個有地域限制的授權暗示成全球通用，此測試必須紅。
+    """
+    assert GUTENBERG_LICENSE == "Public domain in the USA."
+    assert GUTENBERG_LICENSE not in ("public domain", "Public Domain", "公版")
+    assert "USA" in GUTENBERG_LICENSE
+
+
+def test_api_model_exposes_gutenberg_license_and_leaves_libgen_blank(catalog):
+    """2.2：授權必須在 API 回應可見（`SearchResultItem` 建得起來且帶字面值）。
+
+    對照組是 libgen item：它沒有可宣告的授權，欄位必須是 None（空白），
+    不得被套用預設公版——否則「未宣告」與「已確認公版」共用同一個輸出。
+    """
+    remote, _ = catalog
+    remote.upsert_batch(
+        "cat_471", "classics", parse_catalog_csv(CSV_TWO_ROWS)
+    )
+    remote.upsert_batch("cat_471", "classics", [remote_item("a" * 32, "libgen 書")])
+
+    _, stored = remote.query_browseable("cat_471", page=1, page_size=20)
+    api_items = [SearchResultItem(**row) for row in stored]
+    by_source = {item.source: item for item in api_items}
+
+    assert by_source["gutenberg"].license == "Public domain in the USA."
+    assert by_source["libgen"].license is None
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_fetch_failure_raises_and_is_not_an_empty_result():
+    """2.3 判準①（失敗態）：下載失敗必須 raise，不得回一個空結果。
+
+    與下一條 `empty` 測試成對——兩者若共用輸出，這兩條中必有一條紅。
+    """
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unavailable", request=request)
+
+    provider = GutenbergProvider(
+        transport=httpx.MockTransport(boom),
+        max_attempts=2,
+        backoff_base_seconds=0.0,
+    )
+    with pytest.raises(GutenbergFetchError) as excinfo:
+        await provider.fetch_catalog()
+    assert "GUTENBERG_FETCH_FAILED" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_http_404_is_failed_not_silently_parsed_as_empty():
+    """HTTP status 未 gate 時，一份 404 HTML 會被 csv 模組安靜解析成 0 筆，
+
+    於是 `failed` 被降級成 `empty`。此測試鎖住那條 gate。
+    """
+    provider = GutenbergProvider(
+        transport=_csv_transport("<html>not found</html>", status_code=404),
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    with pytest.raises(GutenbergFetchError):
+        await provider.fetch_catalog()
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_zero_rows_is_empty_outcome_not_failure():
+    """2.3 判準①（缺席態）：CSV 抓到但 0 筆 ⇒ `empty`，且**不**丟例外。"""
+    provider = GutenbergProvider(
+        transport=_csv_transport(CSV_HEADER_ONLY),
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_catalog()
+
+    assert result.outcome == "empty"
+    assert result.items == []
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_non_empty_catalog_is_ok_outcome():
+    """正向控制組：同一支 provider 對有資料的 CSV 回 `ok` + 非空 items。
+
+    沒有這一條，上面的 `empty` 可能只是 provider 永遠回空。
+    """
+    provider = GutenbergProvider(
+        transport=_csv_transport(CSV_TWO_ROWS),
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_catalog()
+
+    assert result.outcome == "ok"
+    assert len(result.items) == 2
+
+
+@pytest.mark.asyncio
+async def test_refresher_records_failed_and_empty_with_distinguishable_rows(catalog):
+    """2.3：`failed` 與 `empty` 在 refresh row 上必須可分辨。
+
+    failed ⇒ status='failed' 且 error 含 GUTENBERG_FETCH_FAILED；
+    empty  ⇒ status='fresh' 且 error 為 None。兩者若共用輸出，這條必紅。
+    """
+    remote, _ = catalog
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unavailable", request=request)
+
+    failing = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        gutenberg=GutenbergProvider(
+            transport=httpx.MockTransport(boom),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    assert await failing.refresh_gutenberg("cat_471", "classics") == "failed"
+    failed_status = remote.get_status("cat_471")
+
+    empty = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        gutenberg=GutenbergProvider(
+            transport=_csv_transport(CSV_HEADER_ONLY),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    assert await empty.refresh_gutenberg("cat_471", "classics") == "empty"
+    empty_status = remote.get_status("cat_471")
+
+    assert failed_status["status"] == "failed"
+    assert "GUTENBERG_FETCH_FAILED" in failed_status["error"]
+    assert empty_status["status"] == "fresh"
+    assert empty_status["error"] is None
+    assert failed_status["status"] != empty_status["status"]
+
+
+@pytest.mark.asyncio
+async def test_refresher_without_gutenberg_provider_is_not_run(catalog):
+    """errors.md `not-run`：未設定 provider ⇒ 本輪跳過，且不留下任何 refresh row。
+
+    與 `empty` 的差別在這裡是可觀察的：not-run 連 refresh 紀錄都沒有
+    （status 仍為 never_refreshed），empty 則有一筆 fresh。
+    """
+    remote, _ = catalog
+    refresher = RemoteCatalogRefresher(
+        remote, LibgenCrawler(mirrors=["https://example.test"])
+    )
+
+    assert await refresher.refresh_gutenberg("cat_471", "classics") == "not-run"
+    assert remote.get_status("cat_471")["status"] == "never_refreshed"
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_and_libgen_items_coexist_in_one_category(catalog):
+    """2.4 端到端：兩個來源的 item 同時出現在同一分類的去重總數中。
+
+    libgen 1 筆 + gutenberg 2 筆 = 3，且沒有任何一筆因 md5=NULL 被吃掉。
+    """
+    remote, _ = catalog
+    refresher = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        gutenberg=GutenbergProvider(
+            transport=_csv_transport(CSV_TWO_ROWS),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    remote.upsert_batch("cat_471", "classics", [remote_item("b" * 32, "libgen 那本")])
+
+    assert await refresher.refresh_gutenberg("cat_471", "classics") == "ok"
+
+    total, items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 3
+    assert {item["source"] for item in items} == {"libgen", "gutenberg"}
+    assert {item["title"] for item in items} == {
+        "libgen 那本",
+        "The Declaration of Independence",
+        "Moby Dick",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_refresh_is_idempotent_on_repeat(catalog):
+    """2.4：同一份 catalog 刷兩次，總數仍為 2（複合鍵去重成立，md5 全 NULL）。"""
+    remote, _ = catalog
+    refresher = RemoteCatalogRefresher(
+        remote,
+        LibgenCrawler(mirrors=["https://example.test"]),
+        gutenberg=GutenbergProvider(
+            transport=_csv_transport(CSV_TWO_ROWS),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+
+    await refresher.refresh_gutenberg("cat_471", "classics")
+    await refresher.refresh_gutenberg("cat_471", "classics")
+
+    total, _items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 2
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_concurrency_is_bounded_by_capacity_limiter():
+    """2.5：以 mock transport 量測併發上界，證明「有節流」而非只是寫了個 limiter。
+
+    正向控制組：limiter 容量 2、同時發 6 個請求 ⇒ 觀察到的同時在途數必須 <= 2。
+    若把 limiter 拿掉，peak 會衝到 6，這條會紅——這就是它的判別力。
+    """
+    import anyio
+
+    state = {"inflight": 0, "peak": 0}
+    gate = asyncio.Event()
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
+        await gate.wait()
+        state["inflight"] -= 1
+        return httpx.Response(200, text=CSV_TWO_ROWS)
+
+    limiter = anyio.CapacityLimiter(2)
+    providers = [
+        GutenbergProvider(
+            transport=httpx.MockTransport(slow),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+            limiter=limiter,
+        )
+        for _ in range(6)
+    ]
+    tasks = [asyncio.create_task(p.fetch_catalog()) for p in providers]
+    await asyncio.sleep(0.05)
+    observed_peak_while_blocked = state["peak"]
+    gate.set()
+    results = await asyncio.gather(*tasks)
+
+    assert observed_peak_while_blocked > 0, "控制組：必須真的有請求進到 transport"
+    assert observed_peak_while_blocked <= 2
+    assert state["peak"] <= 2
+    assert all(r.outcome == "ok" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_retries_with_exponential_backoff_before_failing():
+    """2.5：指數退避——3 次嘗試之間的 sleep 秒數必須是 base * 2**n。"""
+    attempts = {"n": 0}
+    slept = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ConnectError("boom", request=request)
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    provider = GutenbergProvider(
+        transport=httpx.MockTransport(flaky),
+        max_attempts=3,
+        backoff_base_seconds=0.5,
+        sleep=fake_sleep,
+    )
+    with pytest.raises(GutenbergFetchError):
+        await provider.fetch_catalog()
+
+    assert attempts["n"] == 3
+    assert slept == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_recovers_on_second_attempt(catalog):
+    """退避的正向控制組：第一次失敗、第二次成功 ⇒ `ok`。
+
+    沒有這條，上面的 retry 測試無法排除「provider 永遠失敗」。
+    """
+    calls = {"n": 0}
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("transient", request=request)
+        return httpx.Response(200, text=CSV_TWO_ROWS)
+
+    provider = GutenbergProvider(
+        transport=httpx.MockTransport(flaky),
+        max_attempts=3,
+        backoff_base_seconds=0.0,
+    )
+    result = await provider.fetch_catalog()
+
+    assert calls["n"] == 2
+    assert result.outcome == "ok"
+    assert result.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_libgen_refresh_path_is_unchanged_by_provider_dispatch(catalog):
+    """2.3 邊界：新增 provider 調度不得改動既有 libgen 刷新路徑的行為。
+
+    帶著 gutenberg provider 建立 refresher 後跑 `refresh()`，libgen 結果
+    必須與 Phase 1 完全相同，且 gutenberg provider 一次都沒被呼叫。
+    """
+    remote, _ = catalog
+    touched = {"n": 0}
+
+    def counting(request: httpx.Request) -> httpx.Response:
+        touched["n"] += 1
+        return httpx.Response(200, text=CSV_TWO_ROWS)
+
+    class PagedCrawler:
+        async def search_page(self, query, page=1, page_size=25):
+            return {
+                "items": [remote_item("5" * 32, "libgen 單頁")],
+                "cursor": "1",
+                "next_page": None,
+                "provider_total": None,
+            }
+
+    refresher = RemoteCatalogRefresher(
+        remote,
+        PagedCrawler(),
+        gutenberg=GutenbergProvider(
+            transport=httpx.MockTransport(counting),
+            max_attempts=1,
+            backoff_base_seconds=0.0,
+        ),
+    )
+    await refresher.refresh("cat_471", "python")
+
+    total, items = remote.query_browseable("cat_471", page=1, page_size=20)
+    assert total == 1
+    assert [item["md5"] for item in items] == ["5" * 32]
+    assert remote.get_status("cat_471")["status"] == "fresh"
+    assert touched["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_gutenberg_mirror_links_do_not_match_libgen_download_markers():
+    """design.md Critical Files：`mirror_resolver` 靠 URL 含 ads.php/get.php/md5=
+
+    判斷 libgen 站。Gutenberg 直鏈不得誤觸這三個標記（誤判會把 PG 直鏈送進
+    libgen 的解析分支）。此處只斷言字串性質，不觸碰 mirror_resolver.py。
+    """
+    items = parse_catalog_csv(CSV_TWO_ROWS)
+    for item in items:
+        for link in item["mirror_links"]:
+            assert "ads.php" not in link
+            assert "get.php" not in link
+            assert "md5=" not in link
 
 
 @pytest.mark.asyncio
